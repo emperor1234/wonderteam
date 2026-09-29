@@ -9,7 +9,31 @@ import { GoogleGenAI } from "@google/genai";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
 import { neon } from "@neondatabase/serverless";
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt:${salt}:${hash}`;
+}
+function verifyPassword(password, storedHash) {
+  if (!storedHash) return false;
+  if (!storedHash.startsWith("scrypt:")) {
+    return password === storedHash;
+  }
+  const parts = storedHash.split(":");
+  if (parts.length !== 3) return false;
+  const [, salt, originalHash] = parts;
+  try {
+    const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+    const hashBuf = Buffer.from(hash, "hex");
+    const origBuf = Buffer.from(originalHash, "hex");
+    if (hashBuf.length !== origBuf.length) return false;
+    return crypto.timingSafeEqual(hashBuf, origBuf);
+  } catch {
+    return false;
+  }
+}
 var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var DATA_DIR = path.resolve(__dirname, "../data");
@@ -41,7 +65,7 @@ function buildProductionInitialData() {
         id: "usr_admin",
         name: "Daniel Mensah",
         email: "admin@wonderteam.com",
-        password: "password123",
+        password: hashPassword("password123"),
         role: "admin",
         sponsorName: "Global Leadership Council",
         uplineDirector: "Executive Board",
@@ -54,7 +78,7 @@ function buildProductionInitialData() {
         id: "usr_amara",
         name: "Amara Okafor",
         email: "amara@wonderteam.com",
-        password: "password123",
+        password: hashPassword("password123"),
         role: "member",
         sponsorName: "Daniel Mensah",
         uplineDirector: "Executive Board",
@@ -67,7 +91,7 @@ function buildProductionInitialData() {
         id: "usr_chinedu",
         name: "Chinedu Obi",
         email: "chinedu@wonderteam.com",
-        password: "password123",
+        password: hashPassword("password123"),
         role: "member",
         sponsorName: "Daniel Mensah",
         uplineDirector: "Executive Board",
@@ -80,7 +104,7 @@ function buildProductionInitialData() {
         id: "usr_mariam",
         name: "Mariam Yusuf",
         email: "mariam@wonderteam.com",
-        password: "password123",
+        password: hashPassword("password123"),
         role: "member",
         sponsorName: "Daniel Mensah",
         uplineDirector: "Executive Board",
@@ -93,7 +117,7 @@ function buildProductionInitialData() {
         id: "usr_tobi",
         name: "Tobi Adeyemi",
         email: "tobi@wonderteam.com",
-        password: "password123",
+        password: hashPassword("password123"),
         role: "member",
         sponsorName: "Amara Okafor",
         uplineDirector: "Executive Board",
@@ -391,7 +415,7 @@ function buildProductionInitialData() {
 var inMemoryDb = null;
 var neonTableInitialized = false;
 function getDatabaseUrl() {
-  return process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL;
+  return process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_PRISMA_URL || process.env.POSTGRES_URL_NON_POOLING || process.env.NEON_DATABASE_URL;
 }
 function getNeonSql() {
   const url = getDatabaseUrl();
@@ -459,18 +483,23 @@ function syncTeamLeader(db) {
   const leaderName = process.env.TEAM_LEADER_NAME || "Team Leader";
   const existing = db.users.find((u) => u.email.toLowerCase() === leaderEmail);
   if (existing) {
+    let changed = false;
     if (existing.role !== "admin") {
       existing.role = "admin";
-      return true;
+      changed = true;
     }
-    return false;
+    if (existing.password && !existing.password.startsWith("scrypt:")) {
+      existing.password = hashPassword(existing.password);
+      changed = true;
+    }
+    return changed;
   }
   const initials = leaderName.split(" ").map((n) => n[0]).join("").substring(0, 2).toUpperCase() || "TL";
   const newLeader = {
     id: `usr_leader_${Date.now()}`,
     name: leaderName,
     email: leaderEmail,
-    password: leaderPassword,
+    password: hashPassword(leaderPassword),
     role: "admin",
     sponsorName: "Global Leadership Council",
     uplineDirector: "Executive Board",
@@ -497,7 +526,14 @@ async function getDb() {
       if (rows && rows.length > 0 && rows[0].data) {
         const rawData = rows[0].data;
         const state = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
-        if (syncTeamLeader(state)) {
+        let shouldSave = syncTeamLeader(state);
+        for (const user of state.users) {
+          if (user.password && !user.password.startsWith("scrypt:")) {
+            user.password = hashPassword(user.password);
+            shouldSave = true;
+          }
+        }
+        if (shouldSave) {
           await saveDb(state);
         }
         inMemoryDb = state;
@@ -518,8 +554,15 @@ async function getDb() {
     }
   }
   const local = inMemoryDb || ensureDbFile();
-  if (syncTeamLeader(local)) {
-    saveDb(local);
+  let shouldSaveLocal = syncTeamLeader(local);
+  for (const user of local.users) {
+    if (user.password && !user.password.startsWith("scrypt:")) {
+      user.password = hashPassword(user.password);
+      shouldSaveLocal = true;
+    }
+  }
+  if (shouldSaveLocal) {
+    await saveDb(local);
   }
   return local;
 }
@@ -546,6 +589,40 @@ async function saveDb(data) {
   } catch (err) {
     console.warn("Local filesystem write skipped (read-only environment):", err);
   }
+}
+async function getDatabaseStatus() {
+  const dbUrl = getDatabaseUrl();
+  const sql = getNeonSql();
+  let connected = false;
+  let storageType = "local_filesystem";
+  let lastUpdated = (/* @__PURE__ */ new Date()).toISOString();
+  if (sql) {
+    try {
+      await ensureNeonTable(sql);
+      const rows = await sql`
+        SELECT updated_at FROM wonderteam_state WHERE key = 'main' LIMIT 1;
+      `;
+      connected = true;
+      storageType = "neon_postgresql";
+      if (rows && rows.length > 0 && rows[0].updated_at) {
+        lastUpdated = new Date(rows[0].updated_at).toISOString();
+      }
+    } catch {
+      connected = false;
+    }
+  }
+  const db = await getDb();
+  return {
+    connected: storageType === "neon_postgresql" ? connected : true,
+    storageType,
+    databaseUrlConfigured: Boolean(dbUrl),
+    usersCount: db.users.length,
+    attendanceCount: db.attendance.length,
+    tasksCount: db.tasks.length,
+    spendingCount: db.spending.length,
+    savedBooksCount: db.savedBooks ? db.savedBooks.length : 0,
+    lastUpdated
+  };
 }
 
 // server/routes.ts
@@ -738,7 +815,7 @@ router.post("/auth/register", async (req, res) => {
     id: `usr_${Date.now()}`,
     name,
     email,
-    password,
+    password: hashPassword(password),
     role: "member",
     sponsorName,
     uplineDirector,
@@ -765,12 +842,19 @@ router.post("/auth/register", async (req, res) => {
 });
 router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required." });
+  }
   const db = await getDb();
   const user = db.users.find(
-    (u) => u.email.toLowerCase() === email?.toLowerCase() && u.password === password
+    (u) => u.email.toLowerCase() === email.trim().toLowerCase()
   );
-  if (!user) {
+  if (!user || !verifyPassword(password, user.password)) {
     return res.status(401).json({ error: "Invalid email or password." });
+  }
+  if (user.password && !user.password.startsWith("scrypt:")) {
+    user.password = hashPassword(password);
+    await saveDb(db);
   }
   const { password: _, ...userWithoutPassword } = user;
   return res.json({ user: userWithoutPassword });
@@ -814,10 +898,10 @@ router.post("/auth/change-password", async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: "User not found" });
   }
-  if (user.password && currentPassword && user.password !== currentPassword) {
+  if (user.password && currentPassword && !verifyPassword(currentPassword, user.password)) {
     return res.status(401).json({ error: "Current password is incorrect" });
   }
-  user.password = newPassword;
+  user.password = hashPassword(newPassword);
   await saveDb(db);
   return res.json({ success: true, message: "Password updated successfully" });
 });
@@ -2220,10 +2304,63 @@ router.get("/admin/leaderboard", async (_req, res) => {
     }
   });
 });
+router.get("/system/db-status", async (_req, res) => {
+  try {
+    const status = await getDatabaseStatus();
+    return res.json(status);
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || "Failed to inspect database status" });
+  }
+});
+router.get("/admin/backup", async (req, res) => {
+  const adminId = req.query.adminId;
+  const db = await getDb();
+  if (adminId) {
+    const requester = db.users.find((u) => u.id === adminId);
+    if (!requester || requester.role !== "admin") {
+      return res.status(403).json({ error: "Only administrators can export database backups" });
+    }
+  }
+  const safeDb = {
+    ...db,
+    users: db.users.map(({ password: _, ...u }) => u)
+  };
+  return res.json({
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    version: "1.0.0",
+    data: safeDb
+  });
+});
+router.post("/admin/backup/restore", async (req, res) => {
+  const { adminId, backupData } = req.body;
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId);
+  if (!requester || requester.role !== "admin") {
+    return res.status(403).json({ error: "Only administrators can restore backups" });
+  }
+  if (!backupData || !Array.isArray(backupData.users) || !Array.isArray(backupData.attendance)) {
+    return res.status(400).json({ error: "Invalid backup format" });
+  }
+  await saveDb(backupData);
+  return res.json({ success: true, message: "Database state restored successfully" });
+});
 var routes_default = router;
 
 // api-src/index.ts
 var app = express();
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  next();
+});
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.get(["/", "/api", "/health", "/api/health"], (req, res) => {

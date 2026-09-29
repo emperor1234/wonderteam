@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
-import { getDb, saveDb } from './db.ts';
+import { getDb, saveDb, hashPassword, verifyPassword, getDatabaseStatus } from './db.ts';
 import type { User, AttendanceRecord, TaskItem, SpendingRecord, DatabaseState } from './db.ts';
 
 const router = Router();
@@ -258,7 +258,7 @@ router.post('/auth/register', async (req: Request, res: Response) => {
     id: `usr_${Date.now()}`,
     name,
     email,
-    password,
+    password: hashPassword(password),
     role: 'member',
     sponsorName,
     uplineDirector,
@@ -291,14 +291,23 @@ router.post('/auth/register', async (req: Request, res: Response) => {
 
 router.post('/auth/login', async (req: Request, res: Response) => {
   const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required.' });
+  }
   const db = await getDb();
 
   const user = db.users.find(
-    (u) => u.email.toLowerCase() === email?.toLowerCase() && u.password === password
+    (u) => u.email.toLowerCase() === email.trim().toLowerCase()
   );
 
-  if (!user) {
+  if (!user || !verifyPassword(password, user.password)) {
     return res.status(401).json({ error: 'Invalid email or password.' });
+  }
+
+  // If user password was plaintext, securely upgrade it
+  if (user.password && !user.password.startsWith('scrypt:')) {
+    user.password = hashPassword(password);
+    await saveDb(db);
   }
 
   const { password: _, ...userWithoutPassword } = user;
@@ -349,10 +358,10 @@ router.post('/auth/change-password', async (req: Request, res: Response) => {
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
   }
-  if (user.password && currentPassword && user.password !== currentPassword) {
+  if (user.password && currentPassword && !verifyPassword(currentPassword, user.password)) {
     return res.status(401).json({ error: 'Current password is incorrect' });
   }
-  user.password = newPassword;
+  user.password = hashPassword(newPassword);
   await saveDb(db);
   return res.json({ success: true, message: 'Password updated successfully' });
 });
@@ -2051,6 +2060,54 @@ router.get('/admin/leaderboard', async (_req: Request, res: Response) => {
       activeMembers,
     },
   });
+});
+
+// -------------------------------------------------------------
+// SYSTEM & DATA INTEGRITY ROUTES
+// -------------------------------------------------------------
+
+router.get('/system/db-status', async (_req: Request, res: Response) => {
+  try {
+    const status = await getDatabaseStatus();
+    return res.json(status);
+  } catch (err: any) {
+    return res.status(500).json({ error: err?.message || 'Failed to inspect database status' });
+  }
+});
+
+router.get('/admin/backup', async (req: Request, res: Response) => {
+  const adminId = req.query.adminId as string;
+  const db = await getDb();
+  if (adminId) {
+    const requester = db.users.find((u) => u.id === adminId);
+    if (!requester || requester.role !== 'admin') {
+      return res.status(403).json({ error: 'Only administrators can export database backups' });
+    }
+  }
+  // Strip sensitive hashed passwords for clean portable backup
+  const safeDb = {
+    ...db,
+    users: db.users.map(({ password: _, ...u }) => u),
+  };
+  return res.json({
+    exportedAt: new Date().toISOString(),
+    version: '1.0.0',
+    data: safeDb,
+  });
+});
+
+router.post('/admin/backup/restore', async (req: Request, res: Response) => {
+  const { adminId, backupData } = req.body;
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId);
+  if (!requester || requester.role !== 'admin') {
+    return res.status(403).json({ error: 'Only administrators can restore backups' });
+  }
+  if (!backupData || !Array.isArray(backupData.users) || !Array.isArray(backupData.attendance)) {
+    return res.status(400).json({ error: 'Invalid backup format' });
+  }
+  await saveDb(backupData);
+  return res.json({ success: true, message: 'Database state restored successfully' });
 });
 
 export default router;

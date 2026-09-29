@@ -1,7 +1,33 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import { neon } from '@neondatabase/serverless';
+
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `scrypt:${salt}:${hash}`;
+}
+
+export function verifyPassword(password: string, storedHash?: string): boolean {
+  if (!storedHash) return false;
+  if (!storedHash.startsWith('scrypt:')) {
+    return password === storedHash;
+  }
+  const parts = storedHash.split(':');
+  if (parts.length !== 3) return false;
+  const [, salt, originalHash] = parts;
+  try {
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    const hashBuf = Buffer.from(hash, 'hex');
+    const origBuf = Buffer.from(originalHash, 'hex');
+    if (hashBuf.length !== origBuf.length) return false;
+    return crypto.timingSafeEqual(hashBuf, origBuf);
+  } catch {
+    return false;
+  }
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -147,7 +173,7 @@ export function buildProductionInitialData(): DatabaseState {
         id: 'usr_admin',
         name: 'Daniel Mensah',
         email: 'admin@wonderteam.com',
-        password: 'password123',
+        password: hashPassword('password123'),
         role: 'admin',
         sponsorName: 'Global Leadership Council',
         uplineDirector: 'Executive Board',
@@ -160,7 +186,7 @@ export function buildProductionInitialData(): DatabaseState {
         id: 'usr_amara',
         name: 'Amara Okafor',
         email: 'amara@wonderteam.com',
-        password: 'password123',
+        password: hashPassword('password123'),
         role: 'member',
         sponsorName: 'Daniel Mensah',
         uplineDirector: 'Executive Board',
@@ -173,7 +199,7 @@ export function buildProductionInitialData(): DatabaseState {
         id: 'usr_chinedu',
         name: 'Chinedu Obi',
         email: 'chinedu@wonderteam.com',
-        password: 'password123',
+        password: hashPassword('password123'),
         role: 'member',
         sponsorName: 'Daniel Mensah',
         uplineDirector: 'Executive Board',
@@ -186,7 +212,7 @@ export function buildProductionInitialData(): DatabaseState {
         id: 'usr_mariam',
         name: 'Mariam Yusuf',
         email: 'mariam@wonderteam.com',
-        password: 'password123',
+        password: hashPassword('password123'),
         role: 'member',
         sponsorName: 'Daniel Mensah',
         uplineDirector: 'Executive Board',
@@ -199,7 +225,7 @@ export function buildProductionInitialData(): DatabaseState {
         id: 'usr_tobi',
         name: 'Tobi Adeyemi',
         email: 'tobi@wonderteam.com',
-        password: 'password123',
+        password: hashPassword('password123'),
         role: 'member',
         sponsorName: 'Amara Okafor',
         uplineDirector: 'Executive Board',
@@ -503,7 +529,9 @@ function getDatabaseUrl(): string | undefined {
   return (
     process.env.DATABASE_URL ||
     process.env.POSTGRES_URL ||
-    process.env.POSTGRES_PRISMA_URL
+    process.env.POSTGRES_PRISMA_URL ||
+    process.env.POSTGRES_URL_NON_POOLING ||
+    process.env.NEON_DATABASE_URL
   );
 }
 
@@ -578,11 +606,16 @@ export function syncTeamLeader(db: DatabaseState): boolean {
 
   const existing = db.users.find((u) => u.email.toLowerCase() === leaderEmail);
   if (existing) {
+    let changed = false;
     if (existing.role !== 'admin') {
       existing.role = 'admin';
-      return true;
+      changed = true;
     }
-    return false;
+    if (existing.password && !existing.password.startsWith('scrypt:')) {
+      existing.password = hashPassword(existing.password);
+      changed = true;
+    }
+    return changed;
   }
 
   const initials = leaderName
@@ -596,7 +629,7 @@ export function syncTeamLeader(db: DatabaseState): boolean {
     id: `usr_leader_${Date.now()}`,
     name: leaderName,
     email: leaderEmail,
-    password: leaderPassword,
+    password: hashPassword(leaderPassword),
     role: 'admin',
     sponsorName: 'Global Leadership Council',
     uplineDirector: 'Executive Board',
@@ -625,7 +658,14 @@ export async function getDb(): Promise<DatabaseState> {
       if (rows && rows.length > 0 && rows[0].data) {
         const rawData = rows[0].data;
         const state = (typeof rawData === 'string' ? JSON.parse(rawData) : rawData) as DatabaseState;
-        if (syncTeamLeader(state)) {
+        let shouldSave = syncTeamLeader(state);
+        for (const user of state.users) {
+          if (user.password && !user.password.startsWith('scrypt:')) {
+            user.password = hashPassword(user.password);
+            shouldSave = true;
+          }
+        }
+        if (shouldSave) {
           await saveDb(state);
         }
         inMemoryDb = state;
@@ -649,8 +689,15 @@ export async function getDb(): Promise<DatabaseState> {
 
   // Fallback to in-memory or local JSON file
   const local = inMemoryDb || ensureDbFile();
-  if (syncTeamLeader(local)) {
-    saveDb(local);
+  let shouldSaveLocal = syncTeamLeader(local);
+  for (const user of local.users) {
+    if (user.password && !user.password.startsWith('scrypt:')) {
+      user.password = hashPassword(user.password);
+      shouldSaveLocal = true;
+    }
+  }
+  if (shouldSaveLocal) {
+    await saveDb(local);
   }
   return local;
 }
@@ -680,6 +727,55 @@ export async function saveDb(data: DatabaseState): Promise<void> {
   } catch (err) {
     console.warn('Local filesystem write skipped (read-only environment):', err);
   }
+}
+
+export interface DatabaseStatus {
+  connected: boolean;
+  storageType: 'neon_postgresql' | 'local_filesystem';
+  databaseUrlConfigured: boolean;
+  usersCount: number;
+  attendanceCount: number;
+  tasksCount: number;
+  spendingCount: number;
+  savedBooksCount: number;
+  lastUpdated: string;
+}
+
+export async function getDatabaseStatus(): Promise<DatabaseStatus> {
+  const dbUrl = getDatabaseUrl();
+  const sql = getNeonSql();
+  let connected = false;
+  let storageType: 'neon_postgresql' | 'local_filesystem' = 'local_filesystem';
+  let lastUpdated = new Date().toISOString();
+
+  if (sql) {
+    try {
+      await ensureNeonTable(sql);
+      const rows = await sql`
+        SELECT updated_at FROM wonderteam_state WHERE key = 'main' LIMIT 1;
+      `;
+      connected = true;
+      storageType = 'neon_postgresql';
+      if (rows && rows.length > 0 && rows[0].updated_at) {
+        lastUpdated = new Date(rows[0].updated_at).toISOString();
+      }
+    } catch {
+      connected = false;
+    }
+  }
+
+  const db = await getDb();
+  return {
+    connected: storageType === 'neon_postgresql' ? connected : true,
+    storageType,
+    databaseUrlConfigured: Boolean(dbUrl),
+    usersCount: db.users.length,
+    attendanceCount: db.attendance.length,
+    tasksCount: db.tasks.length,
+    spendingCount: db.spending.length,
+    savedBooksCount: db.savedBooks ? db.savedBooks.length : 0,
+    lastUpdated,
+  };
 }
 
 export async function resetToProductionData(): Promise<void> {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TeamAttendanceSummary, TeamMemberLiveStatus, TaskItem } from '../types/index.ts';
-import { Users, Clock, AlertTriangle, ArrowRight, ShieldCheck, Trophy, Flame } from 'lucide-react';
+import { Users, Clock, AlertTriangle, ArrowRight, ShieldCheck, Trophy, Flame, Database, Download, CheckCircle2, Lock } from 'lucide-react';
 
 interface AdminOverviewProps {
   onNavigateToAttendance: () => void;
@@ -16,21 +16,51 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
   const [attendanceSummary, setAttendanceSummary] = useState<TeamAttendanceSummary | null>(null);
   const [liveMembers, setLiveMembers] = useState<TeamMemberLiveStatus[]>([]);
   const [tasks, setTasks] = useState<TaskItem[]>([]);
+  const [dbStatus, setDbStatus] = useState<any>(null);
+  const [isExporting, setIsExporting] = useState(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     Promise.all([
       fetch('/api/attendance/team').then((r) => r.json()),
       fetch('/api/tasks?role=admin').then((r) => r.json()),
+      fetch('/api/system/db-status').then((r) => (r.ok ? r.json() : null)),
     ])
-      .then(([attData, tasksData]) => {
-        setAttendanceSummary(attData.summary);
-        setLiveMembers(attData.members);
-        setTasks(tasksData);
+      .then(([attData, tasksData, dbData]) => {
+        if (attData) {
+          setAttendanceSummary(attData.summary);
+          setLiveMembers(attData.members || []);
+        }
+        if (tasksData) setTasks(tasksData);
+        if (dbData) setDbStatus(dbData);
       })
       .catch((err) => console.error('Error loading admin overview:', err))
       .finally(() => setLoading(false));
   }, []);
+
+  const handleDownloadBackup = async () => {
+    setIsExporting(true);
+    try {
+      const res = await fetch('/api/admin/backup');
+      if (res.ok) {
+        const data = await res.json();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const todayStr = new Date().toISOString().substring(0, 10);
+        a.href = url;
+        a.download = `WonderTeam-Database-Backup-${todayStr}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      console.error('Backup download error:', err);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const totalMembers = attendanceSummary?.total || 4;
   const presentCount = attendanceSummary?.presentCount || 0;
@@ -309,6 +339,60 @@ export const AdminOverview: React.FC<AdminOverviewProps> = ({
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Data Security & Cloud Persistence Card */}
+      <div className="bg-white rounded-[16px] border border-[#E2E8E5] p-5 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-[12px] bg-[#E7F4EE] text-[#146C4E] flex items-center justify-center shrink-0">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-[#17211D]">Data Storage & Security Status</h3>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#E7F4EE] text-[#0F513B] text-[10px] font-bold">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span>
+                    {dbStatus?.storageType === 'neon_postgresql'
+                      ? 'Neon PostgreSQL Connected'
+                      : 'Active & Persistent'}
+                  </span>
+                </span>
+              </div>
+              <p className="text-xs text-[#5E6964] mt-1">
+                All records (attendance, tasks, members, finances) are continuously saved. Passwords are protected with salted scrypt hashing.
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-[11px] text-[#5E6964]">
+                <span className="flex items-center gap-1">
+                  <Lock className="w-3 h-3 text-[#146C4E]" />
+                  <span>Encrypted Credentials</span>
+                </span>
+                <span>•</span>
+                <span>
+                  Members: <strong className="text-[#17211D]">{dbStatus?.usersCount ?? liveMembers.length}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  Attendance Logs: <strong className="text-[#17211D]">{dbStatus?.attendanceCount ?? 0}</strong>
+                </span>
+                <span>•</span>
+                <span>
+                  Tasks: <strong className="text-[#17211D]">{dbStatus?.tasksCount ?? tasks.length}</strong>
+                </span>
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleDownloadBackup}
+            disabled={isExporting}
+            className="inline-flex items-center justify-center gap-1.5 px-4 py-2.5 bg-[#F7F9F8] hover:bg-[#E7F4EE] text-[#146C4E] border border-[#CBD6D1] rounded-[10px] text-xs font-bold transition-colors shrink-0 disabled:opacity-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>{isExporting ? 'Exporting...' : 'Download JSON Backup'}</span>
+          </button>
         </div>
       </div>
     </div>
