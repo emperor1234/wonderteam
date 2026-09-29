@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
-import { getDb, saveDb, hashPassword, verifyPassword, getDatabaseStatus } from './db.ts';
+import { getDb, saveDb, hashPassword, verifyPassword, getDatabaseStatus, purgeDemoData } from './db.ts';
 import type { User, AttendanceRecord, TaskItem, SpendingRecord, DatabaseState } from './db.ts';
 
 const router = Router();
@@ -2108,6 +2108,162 @@ router.post('/admin/backup/restore', async (req: Request, res: Response) => {
   }
   await saveDb(backupData);
   return res.json({ success: true, message: 'Database state restored successfully' });
+});
+
+// -------------------------------------------------------------
+// SECURE USER MANAGEMENT (ADMIN ONLY)
+// -------------------------------------------------------------
+
+router.post('/admin/users/role', async (req: Request, res: Response) => {
+  const { adminId, targetUserId, newRole } = req.body;
+  if (!adminId || !targetUserId || !newRole) {
+    return res.status(400).json({ error: 'adminId, targetUserId, and newRole are required' });
+  }
+
+  if (newRole !== 'admin' && newRole !== 'member') {
+    return res.status(400).json({ error: "Invalid role. Role must be 'admin' or 'member'" });
+  }
+
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === 'admin');
+  if (!requester) {
+    return res.status(403).json({ error: 'Unauthorized: Admin privileges required to manage roles' });
+  }
+
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || 'emperorxpert@gmail.com').trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail && newRole !== 'admin') {
+    return res.status(403).json({ error: 'The primary team leader cannot be demoted from admin' });
+  }
+
+  if (adminId === targetUserId && newRole !== 'admin') {
+    return res.status(400).json({ error: 'You cannot remove your own admin privileges' });
+  }
+
+  target.role = newRole;
+  await saveDb(db);
+
+  const { password: _, ...safeUser } = target;
+  return res.json({
+    success: true,
+    message: `User ${target.name} role updated to ${newRole === 'admin' ? 'Leader (Admin)' : 'Member'}.`,
+    user: safeUser,
+  });
+});
+
+router.post('/admin/users/delete', async (req: Request, res: Response) => {
+  const { adminId, targetUserId } = req.body;
+  if (!adminId || !targetUserId) {
+    return res.status(400).json({ error: 'adminId and targetUserId are required' });
+  }
+
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === 'admin');
+  if (!requester) {
+    return res.status(403).json({ error: 'Unauthorized: Admin privileges required to delete accounts' });
+  }
+
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  if (adminId === targetUserId) {
+    return res.status(400).json({ error: 'You cannot delete your own admin account' });
+  }
+
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || 'emperorxpert@gmail.com').trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail) {
+    return res.status(403).json({ error: 'The primary team leader account cannot be deleted' });
+  }
+
+  const userName = target.name;
+
+  // Cascade delete all associated records
+  db.users = db.users.filter((u) => u.id !== targetUserId);
+  db.attendance = db.attendance.filter((a) => a.userId !== targetUserId);
+  db.tasks = db.tasks.filter((t) => t.assigneeId !== targetUserId);
+  db.spending = db.spending.filter((s) => s.userId !== targetUserId);
+  db.budgets = db.budgets.filter((b) => b.userId !== targetUserId);
+  if (db.savedBooks) {
+    db.savedBooks = db.savedBooks.filter((b) => b.userId !== targetUserId);
+  }
+
+  await saveDb(db);
+  return res.json({
+    success: true,
+    message: `Account for ${userName} and all associated records have been permanently deleted.`,
+  });
+});
+
+router.delete('/admin/users/:userId', async (req: Request, res: Response) => {
+  const targetUserId = req.params.userId;
+  const adminId = (req.query.adminId as string) || (req.headers['x-admin-id'] as string);
+  if (!adminId) {
+    return res.status(403).json({ error: 'adminId is required to delete an account' });
+  }
+
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === 'admin');
+  if (!requester) {
+    return res.status(403).json({ error: 'Unauthorized: Admin privileges required' });
+  }
+
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  if (adminId === targetUserId) {
+    return res.status(400).json({ error: 'You cannot delete your own admin account' });
+  }
+
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || 'emperorxpert@gmail.com').trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail) {
+    return res.status(403).json({ error: 'The primary team leader account cannot be deleted' });
+  }
+
+  const userName = target.name;
+  db.users = db.users.filter((u) => u.id !== targetUserId);
+  db.attendance = db.attendance.filter((a) => a.userId !== targetUserId);
+  db.tasks = db.tasks.filter((t) => t.assigneeId !== targetUserId);
+  db.spending = db.spending.filter((s) => s.userId !== targetUserId);
+  db.budgets = db.budgets.filter((b) => b.userId !== targetUserId);
+  if (db.savedBooks) {
+    db.savedBooks = db.savedBooks.filter((b) => b.userId !== targetUserId);
+  }
+
+  await saveDb(db);
+  return res.json({
+    success: true,
+    message: `Account for ${userName} has been permanently deleted.`,
+  });
+});
+
+router.post('/admin/purge-demo', async (req: Request, res: Response) => {
+  const adminId = req.body?.adminId || (req.query?.adminId as string);
+  const db = await getDb();
+  if (adminId) {
+    const requester = db.users.find((u) => u.id === adminId);
+    if (!requester || requester.role !== 'admin') {
+      return res.status(403).json({ error: 'Only administrators can purge demo data' });
+    }
+  }
+  const purged = purgeDemoData(db);
+  if (purged) {
+    await saveDb(db);
+  }
+  return res.json({
+    success: true,
+    message: purged ? 'All demo data has been purged.' : 'Database already contains zero demo records.',
+    userCount: db.users.length,
+    attendanceCount: db.attendance.length,
+    taskCount: db.tasks.length,
+  });
 });
 
 export default router;

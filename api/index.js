@@ -38,379 +38,45 @@ var __filename = fileURLToPath(import.meta.url);
 var __dirname = path.dirname(__filename);
 var DATA_DIR = path.resolve(__dirname, "../data");
 var DB_FILE = path.join(DATA_DIR, "db.json");
-var DEFAULT_AVATAR = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">AO</text></svg>';
-var DEFAULT_OFFICE = {
-  lat: 6.4281,
-  lng: 3.4219,
-  address: "WonderTeam Hub, Victoria Island, Lagos, Nigeria"
-};
-function getDateOffset(offsetDays = 0) {
-  const d = /* @__PURE__ */ new Date();
-  d.setDate(d.getDate() + offsetDays);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
 function buildProductionInitialData() {
-  const today = getDateOffset(0);
-  const yesterday = getDateOffset(-1);
-  const day2 = getDateOffset(-2);
-  const day3 = getDateOffset(-3);
-  const day4 = getDateOffset(-4);
-  const currentMonth = today.substring(0, 7);
   return {
-    users: [
-      {
-        id: "usr_admin",
-        name: "Daniel Mensah",
-        email: "admin@wonderteam.com",
-        password: hashPassword("password123"),
-        role: "admin",
-        sponsorName: "Global Leadership Council",
-        uplineDirector: "Executive Board",
-        uplineWorldTeamLeader: "Founding Circle",
-        profileImage: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23146C4E"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%23FFFFFF" text-anchor="middle" dominant-baseline="middle">DM</text></svg>',
-        officeLocation: DEFAULT_OFFICE,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "usr_amara",
-        name: "Amara Okafor",
-        email: "amara@wonderteam.com",
-        password: hashPassword("password123"),
-        role: "member",
-        sponsorName: "Daniel Mensah",
-        uplineDirector: "Executive Board",
-        uplineWorldTeamLeader: "Founding Circle",
-        profileImage: DEFAULT_AVATAR,
-        officeLocation: DEFAULT_OFFICE,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "usr_chinedu",
-        name: "Chinedu Obi",
-        email: "chinedu@wonderteam.com",
-        password: hashPassword("password123"),
-        role: "member",
-        sponsorName: "Daniel Mensah",
-        uplineDirector: "Executive Board",
-        uplineWorldTeamLeader: "Founding Circle",
-        profileImage: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23F3FAF7"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%232F8F68" text-anchor="middle" dominant-baseline="middle">CO</text></svg>',
-        officeLocation: DEFAULT_OFFICE,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "usr_mariam",
-        name: "Mariam Yusuf",
-        email: "mariam@wonderteam.com",
-        password: hashPassword("password123"),
-        role: "member",
-        sponsorName: "Daniel Mensah",
-        uplineDirector: "Executive Board",
-        uplineWorldTeamLeader: "Founding Circle",
-        profileImage: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">MY</text></svg>',
-        officeLocation: DEFAULT_OFFICE,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "usr_tobi",
-        name: "Tobi Adeyemi",
-        email: "tobi@wonderteam.com",
-        password: hashPassword("password123"),
-        role: "member",
-        sponsorName: "Amara Okafor",
-        uplineDirector: "Executive Board",
-        uplineWorldTeamLeader: "Founding Circle",
-        profileImage: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23F7F9F8"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%2317211D" text-anchor="middle" dominant-baseline="middle">TA</text></svg>',
-        officeLocation: DEFAULT_OFFICE,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      }
-    ],
-    attendance: [
-      {
-        id: "att_01",
-        userId: "usr_amara",
-        userName: "Amara Okafor",
-        userAvatar: DEFAULT_AVATAR,
-        date: today,
-        clockIn: "09:42 AM",
-        clockInTimestamp: Date.now() - 72e5,
-        clockOut: null,
-        clockOutTimestamp: null,
-        durationMinutes: 120,
-        durationFormatted: "2h 00m",
-        status: "present",
-        workEthicStatus: "serious",
-        lastActivity: "Morning Business Standup & Daily Goals Checked"
-      },
-      {
-        id: "att_02",
-        userId: "usr_chinedu",
-        userName: "Chinedu Obi",
-        userAvatar: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23F3FAF7"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%232F8F68" text-anchor="middle" dominant-baseline="middle">CO</text></svg>',
-        date: today,
-        clockIn: "09:38 AM",
-        clockInTimestamp: Date.now() - 762e4,
-        clockOut: null,
-        clockOutTimestamp: null,
-        durationMinutes: 127,
-        durationFormatted: "2h 07m",
-        status: "present",
-        workEthicStatus: "serious",
-        lastActivity: "Client Deliverable Pipeline Sync"
-      },
-      {
-        id: "att_03",
-        userId: "usr_mariam",
-        userName: "Mariam Yusuf",
-        userAvatar: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">MY</text></svg>',
-        date: today,
-        clockIn: "09:48 AM",
-        clockInTimestamp: Date.now() - 6e6,
-        clockOut: null,
-        clockOutTimestamp: null,
-        durationMinutes: 100,
-        durationFormatted: "1h 40m",
-        status: "present",
-        workEthicStatus: "serious",
-        lastActivity: "Freelance Design Milestone Review"
-      },
-      {
-        id: "att_04",
-        userId: "usr_tobi",
-        userName: "Tobi Adeyemi",
-        userAvatar: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23F7F9F8"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%2317211D" text-anchor="middle" dominant-baseline="middle">TA</text></svg>',
-        date: today,
-        clockIn: "09:55 AM",
-        clockInTimestamp: Date.now() - 582e4,
-        clockOut: null,
-        clockOutTimestamp: null,
-        durationMinutes: 97,
-        durationFormatted: "1h 37m",
-        status: "present",
-        workEthicStatus: "serious",
-        lastActivity: "Prospecting Outreach Check-In"
-      },
-      // Consecutive streak records for Amara
-      {
-        id: "att_amara_hist_1",
-        userId: "usr_amara",
-        userName: "Amara Okafor",
-        userAvatar: DEFAULT_AVATAR,
-        date: yesterday,
-        clockIn: "09:40 AM",
-        clockInTimestamp: Date.now() - 864e5,
-        clockOut: "05:30 PM",
-        clockOutTimestamp: Date.now() - 576e5,
-        durationMinutes: 470,
-        durationFormatted: "7h 50m",
-        status: "clocked_out",
-        lastActivity: "Daily operations completed"
-      },
-      {
-        id: "att_amara_hist_2",
-        userId: "usr_amara",
-        userName: "Amara Okafor",
-        userAvatar: DEFAULT_AVATAR,
-        date: day2,
-        clockIn: "09:35 AM",
-        clockInTimestamp: Date.now() - 1728e5,
-        clockOut: "05:00 PM",
-        clockOutTimestamp: Date.now() - 144e6,
-        durationMinutes: 445,
-        durationFormatted: "7h 25m",
-        status: "clocked_out",
-        lastActivity: "Daily operations completed"
-      },
-      {
-        id: "att_amara_hist_3",
-        userId: "usr_amara",
-        userName: "Amara Okafor",
-        userAvatar: DEFAULT_AVATAR,
-        date: day3,
-        clockIn: "09:44 AM",
-        clockInTimestamp: Date.now() - 2592e5,
-        clockOut: "05:15 PM",
-        clockOutTimestamp: Date.now() - 2304e5,
-        durationMinutes: 451,
-        durationFormatted: "7h 31m",
-        status: "clocked_out",
-        lastActivity: "Daily operations completed"
-      },
-      {
-        id: "att_amara_hist_4",
-        userId: "usr_amara",
-        userName: "Amara Okafor",
-        userAvatar: DEFAULT_AVATAR,
-        date: day4,
-        clockIn: "09:39 AM",
-        clockInTimestamp: Date.now() - 3456e5,
-        clockOut: "05:00 PM",
-        clockOutTimestamp: Date.now() - 3168e5,
-        durationMinutes: 441,
-        durationFormatted: "7h 21m",
-        status: "clocked_out",
-        lastActivity: "Daily operations completed"
-      }
-    ],
-    tasks: [
-      {
-        id: "task_01",
-        title: "Deliver interactive design system prototype to fintech client",
-        description: "Hand off component states and design tokens in Figma for front-end implementation.",
-        assigneeId: "usr_amara",
-        assigneeName: "Amara Okafor",
-        type: "personal",
-        status: "completed",
-        priority: "high",
-        dueDate: today,
-        dueTime: "02:00 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "presentation"
-      },
-      {
-        id: "task_02",
-        title: "Call 5 prospective freelance clients from warm outreach list",
-        description: "Follow up on discovery calls and pitch upcoming sprint availability.",
-        assigneeId: "usr_amara",
-        assigneeName: "Amara Okafor",
-        type: "personal",
-        status: "completed",
-        priority: "high",
-        dueDate: today,
-        dueTime: "11:30 AM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "prospecting"
-      },
-      {
-        id: "task_03",
-        title: "Send project proposal and scope agreement for web platform",
-        description: "Finalize deliverable milestones and payment terms.",
-        assigneeId: "usr_amara",
-        assigneeName: "Amara Okafor",
-        type: "personal",
-        status: "completed",
-        priority: "high",
-        dueDate: today,
-        dueTime: "03:30 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "closing"
-      },
-      {
-        id: "task_04",
-        title: "Invoice client for completed milestone sprint",
-        description: "Generate milestone invoice with bank transfer details and sign-off.",
-        assigneeId: "usr_amara",
-        assigneeName: "Amara Okafor",
-        type: "personal",
-        status: "todo",
-        priority: "medium",
-        dueDate: today,
-        dueTime: "05:00 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "retailing"
-      },
-      {
-        id: "task_05",
-        title: "Read 20 minutes of leadership and negotiation book in growth library",
-        description: "Focus on communication principles for client discussions.",
-        assigneeId: "usr_amara",
-        assigneeName: "Amara Okafor",
-        type: "personal",
-        status: "todo",
-        priority: "low",
-        dueDate: today,
-        dueTime: "07:00 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: false,
-        ipaCategory: "mindset_reading"
-      },
-      {
-        id: "task_chinedu_01",
-        title: "Deploy backend API proxy services for client staging review",
-        description: "Push updates to staging environment and verify SSL credentials.",
-        assigneeId: "usr_chinedu",
-        assigneeName: "Chinedu Obi",
-        type: "personal",
-        status: "completed",
-        priority: "high",
-        dueDate: today,
-        dueTime: "01:00 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "presentation"
-      },
-      {
-        id: "task_chinedu_02",
-        title: "Pitch 3 software engineering contracts to remote agencies",
-        description: "Send custom loom videos and code portfolio links.",
-        assigneeId: "usr_chinedu",
-        assigneeName: "Chinedu Obi",
-        type: "personal",
-        status: "todo",
-        priority: "high",
-        dueDate: today,
-        dueTime: "04:00 PM",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString(),
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-        isIPA: true,
-        ipaCategory: "prospecting"
-      }
-    ],
-    spending: [
-      {
-        id: "sp_01",
-        userId: "usr_amara",
-        merchant: "Figma Professional Team Plan",
-        amount: 18e3,
-        category: "Supplies & Equipment",
-        description: "Monthly cloud design collaboration and client prototype hosting",
-        date: yesterday,
-        receipt: "REC-FIG-991",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "sp_02",
-        userId: "usr_amara",
-        merchant: "Victoria Island Co-Working Hub",
-        amount: 25e3,
-        category: "Transport",
-        description: "High-speed dedicated desk pass for client video presentations",
-        date: day2,
-        receipt: "REC-HUB-104",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      },
-      {
-        id: "sp_03",
-        userId: "usr_amara",
-        merchant: "Cloud VPS Server Infrastructure",
-        amount: 14500,
-        category: "Supplies & Equipment",
-        description: "Staging web server deployment for client review environment",
-        date: day3,
-        receipt: "REC-VPS-402",
-        createdAt: (/* @__PURE__ */ new Date()).toISOString()
-      }
-    ],
-    budgets: [
-      {
-        userId: "usr_amara",
-        month: currentMonth,
-        monthlyBudget: 15e4
-      }
-    ]
+    users: [],
+    attendance: [],
+    tasks: [],
+    spending: [],
+    budgets: [],
+    savedBooks: []
   };
+}
+function purgeDemoData(db) {
+  const demoIds = ["usr_admin", "usr_amara", "usr_chinedu", "usr_mariam", "usr_tobi"];
+  const demoEmails = [
+    "admin@wonderteam.com",
+    "amara@wonderteam.com",
+    "chinedu@wonderteam.com",
+    "mariam@wonderteam.com",
+    "tobi@wonderteam.com"
+  ];
+  const beforeLen = db.users.length;
+  db.users = db.users.filter(
+    (u) => !demoIds.includes(u.id) && !demoEmails.includes(u.email.toLowerCase()) && !u.email.toLowerCase().endsWith("@wonderteam.com")
+  );
+  const hadDemoUsers = db.users.length !== beforeLen;
+  const beforeAtt = db.attendance.length;
+  db.attendance = db.attendance.filter(
+    (a) => !demoIds.includes(a.userId) && !a.id.startsWith("att_")
+  );
+  const beforeTasks = db.tasks.length;
+  db.tasks = db.tasks.filter(
+    (t) => !demoIds.includes(t.assigneeId) && !t.id.startsWith("task_")
+  );
+  const beforeSpend = db.spending.length;
+  db.spending = db.spending.filter(
+    (s) => !demoIds.includes(s.userId) && !s.id.startsWith("sp_")
+  );
+  const beforeBudgets = db.budgets.length;
+  db.budgets = db.budgets.filter((b) => !demoIds.includes(b.userId));
+  return hadDemoUsers || db.attendance.length !== beforeAtt || db.tasks.length !== beforeTasks || db.spending.length !== beforeSpend || db.budgets.length !== beforeBudgets;
 }
 var inMemoryDb = null;
 var neonTableInitialized = false;
@@ -477,10 +143,9 @@ function ensureDbFile() {
   }
 }
 function syncTeamLeader(db) {
-  const leaderEmail = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase();
-  if (!leaderEmail) return false;
+  const leaderEmail = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase() || "emperorxpert@gmail.com";
   const leaderPassword = process.env.TEAM_LEADER_PASSWORD || "password123";
-  const leaderName = process.env.TEAM_LEADER_NAME || "Team Leader";
+  const leaderName = process.env.TEAM_LEADER_NAME || "Emperor";
   const existing = db.users.find((u) => u.email.toLowerCase() === leaderEmail);
   if (existing) {
     let changed = false;
@@ -527,6 +192,9 @@ async function getDb() {
         const rawData = rows[0].data;
         const state = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
         let shouldSave = syncTeamLeader(state);
+        if (purgeDemoData(state)) {
+          shouldSave = true;
+        }
         for (const user of state.users) {
           if (user.password && !user.password.startsWith("scrypt:")) {
             user.password = hashPassword(user.password);
@@ -555,6 +223,9 @@ async function getDb() {
   }
   const local = inMemoryDb || ensureDbFile();
   let shouldSaveLocal = syncTeamLeader(local);
+  if (purgeDemoData(local)) {
+    shouldSaveLocal = true;
+  }
   for (const user of local.users) {
     if (user.password && !user.password.startsWith("scrypt:")) {
       user.password = hashPassword(user.password);
@@ -2343,6 +2014,133 @@ router.post("/admin/backup/restore", async (req, res) => {
   }
   await saveDb(backupData);
   return res.json({ success: true, message: "Database state restored successfully" });
+});
+router.post("/admin/users/role", async (req, res) => {
+  const { adminId, targetUserId, newRole } = req.body;
+  if (!adminId || !targetUserId || !newRole) {
+    return res.status(400).json({ error: "adminId, targetUserId, and newRole are required" });
+  }
+  if (newRole !== "admin" && newRole !== "member") {
+    return res.status(400).json({ error: "Invalid role. Role must be 'admin' or 'member'" });
+  }
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === "admin");
+  if (!requester) {
+    return res.status(403).json({ error: "Unauthorized: Admin privileges required to manage roles" });
+  }
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || "emperorxpert@gmail.com").trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail && newRole !== "admin") {
+    return res.status(403).json({ error: "The primary team leader cannot be demoted from admin" });
+  }
+  if (adminId === targetUserId && newRole !== "admin") {
+    return res.status(400).json({ error: "You cannot remove your own admin privileges" });
+  }
+  target.role = newRole;
+  await saveDb(db);
+  const { password: _, ...safeUser } = target;
+  return res.json({
+    success: true,
+    message: `User ${target.name} role updated to ${newRole === "admin" ? "Leader (Admin)" : "Member"}.`,
+    user: safeUser
+  });
+});
+router.post("/admin/users/delete", async (req, res) => {
+  const { adminId, targetUserId } = req.body;
+  if (!adminId || !targetUserId) {
+    return res.status(400).json({ error: "adminId and targetUserId are required" });
+  }
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === "admin");
+  if (!requester) {
+    return res.status(403).json({ error: "Unauthorized: Admin privileges required to delete accounts" });
+  }
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (adminId === targetUserId) {
+    return res.status(400).json({ error: "You cannot delete your own admin account" });
+  }
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || "emperorxpert@gmail.com").trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail) {
+    return res.status(403).json({ error: "The primary team leader account cannot be deleted" });
+  }
+  const userName = target.name;
+  db.users = db.users.filter((u) => u.id !== targetUserId);
+  db.attendance = db.attendance.filter((a) => a.userId !== targetUserId);
+  db.tasks = db.tasks.filter((t) => t.assigneeId !== targetUserId);
+  db.spending = db.spending.filter((s) => s.userId !== targetUserId);
+  db.budgets = db.budgets.filter((b) => b.userId !== targetUserId);
+  if (db.savedBooks) {
+    db.savedBooks = db.savedBooks.filter((b) => b.userId !== targetUserId);
+  }
+  await saveDb(db);
+  return res.json({
+    success: true,
+    message: `Account for ${userName} and all associated records have been permanently deleted.`
+  });
+});
+router.delete("/admin/users/:userId", async (req, res) => {
+  const targetUserId = req.params.userId;
+  const adminId = req.query.adminId || req.headers["x-admin-id"];
+  if (!adminId) {
+    return res.status(403).json({ error: "adminId is required to delete an account" });
+  }
+  const db = await getDb();
+  const requester = db.users.find((u) => u.id === adminId && u.role === "admin");
+  if (!requester) {
+    return res.status(403).json({ error: "Unauthorized: Admin privileges required" });
+  }
+  const target = db.users.find((u) => u.id === targetUserId);
+  if (!target) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  if (adminId === targetUserId) {
+    return res.status(400).json({ error: "You cannot delete your own admin account" });
+  }
+  const leaderEmail = (process.env.TEAM_LEADER_EMAIL || "emperorxpert@gmail.com").trim().toLowerCase();
+  if (target.email.toLowerCase() === leaderEmail) {
+    return res.status(403).json({ error: "The primary team leader account cannot be deleted" });
+  }
+  const userName = target.name;
+  db.users = db.users.filter((u) => u.id !== targetUserId);
+  db.attendance = db.attendance.filter((a) => a.userId !== targetUserId);
+  db.tasks = db.tasks.filter((t) => t.assigneeId !== targetUserId);
+  db.spending = db.spending.filter((s) => s.userId !== targetUserId);
+  db.budgets = db.budgets.filter((b) => b.userId !== targetUserId);
+  if (db.savedBooks) {
+    db.savedBooks = db.savedBooks.filter((b) => b.userId !== targetUserId);
+  }
+  await saveDb(db);
+  return res.json({
+    success: true,
+    message: `Account for ${userName} has been permanently deleted.`
+  });
+});
+router.post("/admin/purge-demo", async (req, res) => {
+  const adminId = req.body?.adminId || req.query?.adminId;
+  const db = await getDb();
+  if (adminId) {
+    const requester = db.users.find((u) => u.id === adminId);
+    if (!requester || requester.role !== "admin") {
+      return res.status(403).json({ error: "Only administrators can purge demo data" });
+    }
+  }
+  const purged = purgeDemoData(db);
+  if (purged) {
+    await saveDb(db);
+  }
+  return res.json({
+    success: true,
+    message: purged ? "All demo data has been purged." : "Database already contains zero demo records.",
+    userCount: db.users.length,
+    attendanceCount: db.attendance.length,
+    taskCount: db.tasks.length
+  });
 });
 var routes_default = router;
 
