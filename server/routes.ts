@@ -199,6 +199,14 @@ router.post('/auth/register', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Name, email, and password are required.' });
   }
 
+  // Team Leader email is reserved via environment variables
+  const reservedLeaderEmail = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase();
+  if (reservedLeaderEmail && email.trim().toLowerCase() === reservedLeaderEmail) {
+    return res.status(400).json({
+      error: 'This email is reserved for the Team Leader account. Please sign in directly using your credentials.',
+    });
+  }
+
   if (!sponsorName || !uplineDirector || !uplineWorldTeamLeader) {
     return res.status(400).json({
       error: 'Upline hierarchy details (Sponsor, Upline Director, and Upline World Team Leader) are required.',
@@ -243,12 +251,13 @@ router.post('/auth/register', async (req: Request, res: Response) => {
 
   const defaultAvatar = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">${initials}</text></svg>`;
 
+  // Registration is strictly for members; Team Leaders are pre-configured in .env
   const newUser: User = {
     id: `usr_${Date.now()}`,
     name,
     email,
     password,
-    role: role === 'admin' ? 'admin' : 'member',
+    role: 'member',
     sponsorName,
     uplineDirector,
     uplineWorldTeamLeader,
@@ -323,6 +332,27 @@ router.post('/auth/update-profile', async (req: Request, res: Response) => {
   await saveDb(db);
   const { password: _, ...sanitized } = user;
   return res.json({ user: sanitized });
+});
+
+router.post('/auth/change-password', async (req: Request, res: Response) => {
+  const { userId, currentPassword, newPassword } = req.body;
+  if (!userId || !newPassword) {
+    return res.status(400).json({ error: 'User ID and new password are required' });
+  }
+  if (typeof newPassword !== 'string' || newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+  }
+  const db = await getDb();
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+  if (user.password && currentPassword && user.password !== currentPassword) {
+    return res.status(401).json({ error: 'Current password is incorrect' });
+  }
+  user.password = newPassword;
+  await saveDb(db);
+  return res.json({ success: true, message: 'Password updated successfully' });
 });
 
 // -------------------------------------------------------------

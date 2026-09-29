@@ -23,7 +23,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   const [name, setName] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
-  const [role, setRole] = useState<UserRole>('member');
+  const role: UserRole = 'member';
   const [sponsorName, setSponsorName] = useState('');
   const [uplineDirector, setUplineDirector] = useState('');
   const [uplineWorldTeamLeader, setUplineWorldTeamLeader] = useState('');
@@ -138,47 +138,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
         profileImage: profileImage || '',
         officeLocation,
       });
-
-      // Automatic download of member pass & credentials upon account creation
-      try {
-        const passData = {
-          hub: 'WonderTeam · Networking & Freelance Hub',
-          member: {
-            name,
-            email: regEmail,
-            role: role === 'admin' ? 'Team Director' : 'Team Member',
-            sponsor: sponsorName,
-            director: uplineDirector,
-            worldTeamLeader: uplineWorldTeamLeader,
-            registeredOffice: officeLocation.address,
-            registeredAt: new Date().toISOString(),
-          },
-          dailySchedule: {
-            morningStandupWindow: '09:30 AM – 10:00 AM WAT',
-            todoPlanningWindow: '09:30 AM – 11:00 AM WAT',
-            coreDiscipline: 'Income Producing Activities (IPAs)',
-          },
-          onboardingChecklist: [
-            '1. Check in daily on-time between 09:30 AM and 10:00 AM WAT.',
-            '2. Add and prioritize daily tasks before 11:00 AM WAT.',
-            '3. Read 1 chapter daily in the Growth Library (Google Embedded Books API).',
-            '4. Track business expenses privately in Member Spending.',
-          ],
-        };
-        const blob = new Blob([JSON.stringify(passData, null, 2)], {
-          type: 'application/json',
-        });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `WonderTeam-Member-Pass-${name.replace(/\s+/g, '_')}.json`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } catch (dlErr) {
-        console.warn('Pass download note:', dlErr);
-      }
 
       onClose();
     } catch (err: any) {
@@ -336,38 +295,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 </div>
               </div>
 
-              {/* Role selection */}
-              <div>
-                <label className="block text-xs font-semibold text-[#5E6964] mb-1">
-                  Account Role
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setRole('member')}
-                    className={`py-2 px-3 border rounded-[10px] text-xs font-medium text-left ${
-                      role === 'member'
-                        ? 'bg-[#E7F4EE] border-[#146C4E] text-[#0F513B]'
-                        : 'bg-white border-[#E2E8E5] text-[#5E6964]'
-                    }`}
-                  >
-                    <div className="font-semibold">Team Member</div>
-                    <div className="text-[10px] opacity-80">Attendance, tasks, own spending</div>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setRole('admin')}
-                    className={`py-2 px-3 border rounded-[10px] text-xs font-medium text-left ${
-                      role === 'admin'
-                        ? 'bg-[#E7F4EE] border-[#146C4E] text-[#0F513B]'
-                        : 'bg-white border-[#E2E8E5] text-[#5E6964]'
-                    }`}
-                  >
-                    <div className="font-semibold">Admin / Leader</div>
-                    <div className="text-[10px] opacity-80">Team presence, tasks (no finance)</div>
-                  </button>
-                </div>
-              </div>
 
               {/* Full Name & Email */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

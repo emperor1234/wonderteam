@@ -557,6 +557,50 @@ function ensureDbFile(): DatabaseState {
   }
 }
 
+export function syncTeamLeader(db: DatabaseState): boolean {
+  const leaderEmail = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase();
+  if (!leaderEmail) return false;
+  const leaderPassword = process.env.TEAM_LEADER_PASSWORD || 'password123';
+  const leaderName = process.env.TEAM_LEADER_NAME || 'Team Leader';
+
+  const existing = db.users.find((u) => u.email.toLowerCase() === leaderEmail);
+  if (existing) {
+    if (existing.role !== 'admin') {
+      existing.role = 'admin';
+      return true;
+    }
+    return false;
+  }
+
+  const initials = leaderName
+    .split(' ')
+    .map((n) => n[0])
+    .join('')
+    .substring(0, 2)
+    .toUpperCase() || 'TL';
+
+  const newLeader: User = {
+    id: `usr_leader_${Date.now()}`,
+    name: leaderName,
+    email: leaderEmail,
+    password: leaderPassword,
+    role: 'admin',
+    sponsorName: 'Global Leadership Council',
+    uplineDirector: 'Executive Board',
+    uplineWorldTeamLeader: 'Founding Circle',
+    profileImage: `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23146C4E"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%23FFFFFF" text-anchor="middle" dominant-baseline="middle">${initials}</text></svg>`,
+    officeLocation: {
+      lat: 6.4281,
+      lng: 3.4219,
+      address: 'WonderTeam Hub, Victoria Island, Lagos, Nigeria',
+    },
+    createdAt: new Date().toISOString(),
+  };
+
+  db.users.unshift(newLeader);
+  return true;
+}
+
 export async function getDb(): Promise<DatabaseState> {
   const sql = getNeonSql();
   if (sql) {
@@ -567,11 +611,15 @@ export async function getDb(): Promise<DatabaseState> {
       `;
       if (rows && rows.length > 0 && rows[0].data) {
         const state = rows[0].data as DatabaseState;
+        if (syncTeamLeader(state)) {
+          await saveDb(state);
+        }
         inMemoryDb = state;
         return state;
       }
       // If table exists but has no data, initialize with production data
       const initial = buildProductionInitialData();
+      syncTeamLeader(initial);
       await sql`
         INSERT INTO wonderteam_state (key, data, updated_at)
         VALUES ('main', ${JSON.stringify(initial)}, NOW())
@@ -585,10 +633,11 @@ export async function getDb(): Promise<DatabaseState> {
   }
 
   // Fallback to in-memory or local JSON file
-  if (inMemoryDb) {
-    return inMemoryDb;
+  const local = inMemoryDb || ensureDbFile();
+  if (syncTeamLeader(local)) {
+    saveDb(local);
   }
-  return ensureDbFile();
+  return local;
 }
 
 export async function saveDb(data: DatabaseState): Promise<void> {

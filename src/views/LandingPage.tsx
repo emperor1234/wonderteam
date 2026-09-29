@@ -10,16 +10,12 @@ interface LandingPageProps {
 export const LandingPage: React.FC<LandingPageProps> = ({ onOpenRegister, onOpenLogin, deferredPrompt }) => {
   const handleJoin = async () => {
     if (deferredPrompt) {
-      try { deferredPrompt.prompt(); } catch (err) { console.log('PWA:', err); }
+      try {
+        await deferredPrompt.prompt();
+      } catch (err) {
+        console.log('PWA install prompt:', err);
+      }
     }
-    try {
-      const blob = new Blob([JSON.stringify({ name: 'WonderTeam', short_name: 'WonderTeam', description: 'Networking & Freelancing Hub', start_url: '/', display: 'standalone', theme_color: '#146C4E', background_color: '#F7F9F8', installedAt: new Date().toISOString() }, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'WonderTeam-App.json';
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (e) { console.error('Download:', e); }
     onOpenRegister();
   };
 

@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
 import { compressImageUnder10KB, MAX_PROFILE_IMAGE_BYTES } from '../utils/imageHelper.ts';
-import { UserCheck, Shield, Upload, Check, AlertCircle, LogOut } from 'lucide-react';
+import { UserCheck, Shield, Upload, Check, AlertCircle, LogOut, KeyRound } from 'lucide-react';
 
 interface ProfileViewProps {
   onOpenAuth: () => void;
@@ -23,6 +23,13 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAuth }) => {
   const [uplineDirector, setUplineDirector] = useState(user?.uplineDirector || '');
   const [uplineWorldTeamLeader, setUplineWorldTeamLeader] = useState(user?.uplineWorldTeamLeader || '');
   const [isSaving, setIsSaving] = useState(false);
+
+  // Password change state
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [passwordFeedback, setPasswordFeedback] = useState<{ msg: string; isError: boolean } | null>(null);
 
   if (!user) return null;
 
@@ -73,6 +80,43 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAuth }) => {
       setFileFeedback({ msg: err.message || 'Failed to update', isError: true });
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 6) {
+      setPasswordFeedback({ msg: 'New password must be at least 6 characters long.', isError: true });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordFeedback({ msg: 'New passwords do not match.', isError: true });
+      return;
+    }
+    setIsChangingPassword(true);
+    setPasswordFeedback(null);
+    try {
+      const res = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: user.id,
+          currentPassword,
+          newPassword,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to update password');
+      }
+      setPasswordFeedback({ msg: 'Password updated successfully!', isError: false });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: any) {
+      setPasswordFeedback({ msg: err.message || 'Error updating password', isError: true });
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -270,6 +314,91 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ onOpenAuth }) => {
             </div>
           </div>
         )}
+      </div>
+
+      {/* Security & Password */}
+      <div className="bg-white rounded-[16px] border border-[#E2E8E5] p-5 shadow-xs space-y-4">
+        <div className="flex items-center gap-2">
+          <KeyRound className="w-4 h-4 text-[#146C4E]" />
+          <div>
+            <h2 className="text-sm font-semibold text-[#17211D]">Security & Password</h2>
+            <p className="text-xs text-[#5E6964]">Update your login password</p>
+          </div>
+        </div>
+
+        <form onSubmit={handlePasswordChange} className="space-y-3">
+          {passwordFeedback && (
+            <div
+              className={`p-2.5 rounded-[10px] border text-xs flex items-center gap-2 ${
+                passwordFeedback.isError
+                  ? 'bg-[#FFF0F0] border-[#E2E8E5] text-[#C84C4C]'
+                  : 'bg-[#F3FAF7] border-[#E7F4EE] text-[#0F513B]'
+              }`}
+            >
+              {passwordFeedback.isError ? (
+                <AlertCircle className="w-4 h-4 shrink-0" />
+              ) : (
+                <Check className="w-4 h-4 shrink-0" />
+              )}
+              <span>{passwordFeedback.msg}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-[#5E6964] mb-1">
+                Current Password
+              </label>
+              <input
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
+                placeholder="Current password"
+                className="w-full h-9 px-3 bg-[#F7F9F8] border border-[#CBD6D1] rounded-[8px] text-xs text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-[#5E6964] mb-1">
+                New Password (min 6 chars)
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="New password"
+                className="w-full h-9 px-3 bg-[#F7F9F8] border border-[#CBD6D1] rounded-[8px] text-xs text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-[#5E6964] mb-1">
+                Confirm New Password
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="Confirm password"
+                className="w-full h-9 px-3 bg-[#F7F9F8] border border-[#CBD6D1] rounded-[8px] text-xs text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E]"
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isChangingPassword || !newPassword}
+            className="px-4 py-2 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-semibold rounded-[8px] shadow-2xs transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+          >
+            {isChangingPassword ? (
+              <span>Updating...</span>
+            ) : (
+              <span>Update Password</span>
+            )}
+          </button>
+        </form>
       </div>
 
       {/* Account Actions */}
