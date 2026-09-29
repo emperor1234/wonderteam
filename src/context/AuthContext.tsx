@@ -96,8 +96,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     if (!res.ok) {
-      const errorData = await res.json();
-      throw new Error(errorData.error || 'Failed to sign in');
+      let errMsg = 'Failed to sign in';
+      try {
+        const errorData = await res.json();
+        errMsg = errorData.error || errMsg;
+      } catch {
+        const text = await res.text();
+        errMsg = text || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
     const { user: authedUser } = await res.json();
@@ -127,8 +134,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     if (!res.ok) {
-      const errorData = await res.json();
-      throw new Error(errorData.error || 'Registration failed');
+      let errMsg = 'Registration failed';
+      try {
+        const errorData = await res.json();
+        errMsg = errorData.error || errMsg;
+      } catch {
+        const text = await res.text();
+        errMsg = text || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
     const { user: newUser } = await res.json();
@@ -154,8 +168,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error || 'Failed to update profile');
+      let errMsg = 'Failed to update profile';
+      try {
+        const err = await res.json();
+        errMsg = err.error || errMsg;
+      } catch {
+        const text = await res.text();
+        errMsg = text || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
     const { user: updated } = await res.json();

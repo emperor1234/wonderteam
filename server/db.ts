@@ -534,23 +534,36 @@ async function ensureNeonTable(sql: any): Promise<void> {
   }
 }
 
-function ensureDbFile(): DatabaseState {
+function getDbFilePath(): string {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    if (!fs.existsSync(DB_FILE)) {
+    return DB_FILE;
+  } catch {
+    return '/tmp/wonderteam_db.json';
+  }
+}
+
+function ensureDbFile(): DatabaseState {
+  const filePath = getDbFilePath();
+  try {
+    if (!fs.existsSync(filePath)) {
       const initial = buildProductionInitialData();
-      fs.writeFileSync(DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(initial, null, 2), 'utf-8');
+      } catch (wErr) {
+        console.warn('Filesystem is read-only, using memory cache:', wErr);
+      }
       inMemoryDb = initial;
       return initial;
     }
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
+    const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
     inMemoryDb = parsed;
     return parsed;
   } catch (err) {
-    console.error('Failed to read database file, generating fresh production data:', err);
+    console.warn('Fallback to in-memory initial data:', err);
     const initial = buildProductionInitialData();
     inMemoryDb = initial;
     return initial;
@@ -610,7 +623,8 @@ export async function getDb(): Promise<DatabaseState> {
         SELECT data FROM wonderteam_state WHERE key = 'main' LIMIT 1;
       `;
       if (rows && rows.length > 0 && rows[0].data) {
-        const state = rows[0].data as DatabaseState;
+        const rawData = rows[0].data;
+        const state = (typeof rawData === 'string' ? JSON.parse(rawData) : rawData) as DatabaseState;
         if (syncTeamLeader(state)) {
           await saveDb(state);
         }
@@ -620,9 +634,10 @@ export async function getDb(): Promise<DatabaseState> {
       // If table exists but has no data, initialize with production data
       const initial = buildProductionInitialData();
       syncTeamLeader(initial);
+      const jsonStr = JSON.stringify(initial);
       await sql`
         INSERT INTO wonderteam_state (key, data, updated_at)
-        VALUES ('main', ${JSON.stringify(initial)}, NOW())
+        VALUES ('main', ${jsonStr}::jsonb, NOW())
         ON CONFLICT (key) DO NOTHING;
       `;
       inMemoryDb = initial;
@@ -646,10 +661,11 @@ export async function saveDb(data: DatabaseState): Promise<void> {
   if (sql) {
     try {
       await ensureNeonTable(sql);
+      const jsonStr = JSON.stringify(data);
       await sql`
         INSERT INTO wonderteam_state (key, data, updated_at)
-        VALUES ('main', ${JSON.stringify(data)}, NOW())
-        ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();
+        VALUES ('main', ${jsonStr}::jsonb, NOW())
+        ON CONFLICT (key) DO UPDATE SET data = ${jsonStr}::jsonb, updated_at = NOW();
       `;
       return;
     } catch (err) {
@@ -657,14 +673,12 @@ export async function saveDb(data: DatabaseState): Promise<void> {
     }
   }
 
-  // Fallback to local filesystem
+  // Fallback to local filesystem (handles read-only environments gracefully)
   try {
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    const filePath = getDbFilePath();
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Failed to write local database file:', err);
+    console.warn('Local filesystem write skipped (read-only environment):', err);
   }
 }
 
