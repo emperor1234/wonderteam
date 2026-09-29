@@ -7,8 +7,13 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // Health check endpoints
-app.get(['/health', '/api/health'], (_req, res) => {
-  res.json({ status: 'ok', time: new Date().toISOString() });
+app.get(['/', '/api', '/health', '/api/health'], (req, res) => {
+  res.json({
+    status: 'ok',
+    time: new Date().toISOString(),
+    url: req.url,
+    originalUrl: req.originalUrl,
+  });
 });
 
 // Path normalizer: ensures both /api/... and /... hit apiRouter
@@ -39,4 +44,8 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   });
 });
 
-export default app;
+export default function handler(req: any, res: any) {
+  return app(req, res);
+}
+
+export { app };
