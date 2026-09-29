@@ -205,7 +205,6 @@ export const AdminTasks: React.FC = () => {
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onTaskCreated={fetchTasks}
-        defaultType="assigned"
       />
     </div>
   );

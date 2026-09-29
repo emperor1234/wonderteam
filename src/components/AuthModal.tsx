@@ -11,7 +11,7 @@ interface AuthModalProps {
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
-  const { login, register, availableUsers, switchUser } = useAuth();
+  const { login, register } = useAuth();
   const [mode, setMode] = useState<'signin' | 'register'>('signin');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -209,29 +209,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
           </button>
         </div>
 
-        {/* Quick Demo Profiles Bar */}
-        <div className="bg-[#F7F9F8] border-b border-[#E2E8E5] px-5 py-2.5">
-          <div className="text-[11px] font-semibold text-[#89928E] uppercase tracking-wider mb-1.5">
-            Quick Switch Member Account
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {availableUsers.map((u) => (
-              <button
-                key={u.id}
-                type="button"
-                onClick={() => {
-                  switchUser(u.id);
-                  onClose();
-                }}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-white hover:bg-[#E7F4EE] border border-[#E2E8E5] rounded-[8px] text-[11px] font-medium text-[#17211D] transition-colors"
-              >
-                <img src={u.profileImage} alt="" className="w-4 h-4 rounded-full object-cover" />
-                <span>{u.name.split(' ')[0]}</span>
-                <span className="text-[10px] text-[#89928E]">({u.role === 'admin' ? 'Leader' : 'Member'})</span>
-              </button>
-            ))}
-          </div>
-        </div>
 
         {/* Scrollable Form Area */}
         <div className="p-5 overflow-y-auto flex-1">
@@ -283,7 +260,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
                 <input
                   type="email"
                   required
-                  placeholder="amara.okafor@wonderteam.edu"
+                  placeholder="your@email.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full h-11 px-3 bg-white border border-[#CBD6D1] rounded-[10px] text-xs text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E]"

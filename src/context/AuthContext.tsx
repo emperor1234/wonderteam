@@ -65,19 +65,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       try {
         const users = await refreshUsers();
         // Check local storage for stored user id
-        const storedUserId = localStorage.getItem('greenline_user_id');
+        const storedUserId = localStorage.getItem('wonderteam_user_id') || localStorage.getItem('greenline_user_id');
         if (storedUserId && users.length > 0) {
           const found = users.find((u: User) => u.id === storedUserId);
           if (found) {
             setUser(found);
+            localStorage.setItem('wonderteam_user_id', found.id);
           } else {
-            // Default to first member (Amara Okafor)
-            setUser(users[0]);
-            localStorage.setItem('greenline_user_id', users[0].id);
+            localStorage.removeItem('wonderteam_user_id');
+            localStorage.removeItem('greenline_user_id');
+            setUser(null);
           }
-        } else if (users.length > 0) {
-          setUser(users[0]);
-          localStorage.setItem('greenline_user_id', users[0].id);
+        } else {
+          setUser(null);
         }
       } catch (err) {
         console.error('Initialization error in AuthProvider:', err);
@@ -88,7 +88,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     init();
   }, []);
 
-  const login = async (email: string, password = 'password123') => {
+  const login = async (email: string, password?: string) => {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -102,7 +102,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: authedUser } = await res.json();
     setUser(authedUser);
-    localStorage.setItem('greenline_user_id', authedUser.id);
+    localStorage.setItem('wonderteam_user_id', authedUser.id);
     await refreshUsers();
   };
 
@@ -133,7 +133,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: newUser } = await res.json();
     setUser(newUser);
-    localStorage.setItem('greenline_user_id', newUser.id);
+    localStorage.setItem('wonderteam_user_id', newUser.id);
     await refreshUsers();
   };
 
@@ -141,7 +141,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const target = availableUsers.find((u) => u.id === userId);
     if (target) {
       setUser(target);
-      localStorage.setItem('greenline_user_id', target.id);
+      localStorage.setItem('wonderteam_user_id', target.id);
     }
   };
 
@@ -160,12 +160,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: updated } = await res.json();
     setUser(updated);
-    localStorage.setItem('greenline_user_id', updated.id);
+    localStorage.setItem('wonderteam_user_id', updated.id);
     await refreshUsers();
   };
 
   const logout = () => {
     setUser(null);
+    localStorage.removeItem('wonderteam_user_id');
     localStorage.removeItem('greenline_user_id');
   };
 

@@ -112,7 +112,7 @@ export const AIPrioritizerModal: React.FC<AIPrioritizerModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold tracking-tight">Gemini AI IPA Prioritizer</h2>
-              <p className="text-xs text-[#A3E5CB]">Network Marketing Income Producing Activities Optimization</p>
+              <p className="text-xs text-[#A3E5CB]">Networking & Freelancing · Income Producing Activities Optimizer</p>
             </div>
           </div>
           <button

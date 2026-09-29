@@ -1403,7 +1403,7 @@ router.get('/library/google-books', async (req: Request, res: Response) => {
     const apiUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=24&printType=books`;
     const response = await fetch(apiUrl, {
       headers: {
-        'User-Agent': 'WonderTeamNeoLifeApp/1.0',
+        'User-Agent': 'WonderTeamApp/1.0',
       },
       signal: controller.signal,
     });
@@ -1627,7 +1627,7 @@ Current Time in WAT: ${gmt1.timeStr} (Period: ${period})
   // Attempt real Gemini AI generation if API key is configured
   if (process.env.GEMINI_API_KEY) {
     try {
-      const prompt = `You are a world-class mentor and executive business coach for network marketers and freelancers collaborating together.
+      const prompt = `You are a world-class mentor and executive business coach for networkers and freelancers collaborating together.
 Generate an inspiring motivational quote and a personalized coaching note for ${memberName}.
 Current Time Slot: ${timeTitle} (${period}, WAT time: ${gmt1.timeStr}).
 Member's Real App Activity:
@@ -1891,4 +1891,135 @@ Provide strict JSON output adhering to this structure:
   return res.json(result);
 });
 
+
+// -------------------------------------------------------------
+// ADMIN LEADERBOARD - GAMIFIED TEAM PERFORMANCE TRACKING
+// -------------------------------------------------------------
+
+router.get('/admin/leaderboard', (_req: Request, res: Response) => {
+  const db = getDb();
+  const members = db.users.filter((u) => u.role === 'member');
+  const todayStr = getTodayDateStr();
+
+  const computeStreak = (userId: string): number => {
+    const records = db.attendance
+      .filter((a) => a.userId === userId && (a.status === 'present' || a.status === 'clocked_out'))
+      .map((a) => a.date)
+      .sort((a, b) => b.localeCompare(a)); // newest first
+
+    if (records.length === 0) return 0;
+
+    let streak = 0;
+    let checkDate = new Date(todayStr);
+
+    for (let i = 0; i < 365; i++) {
+      const dateStr = checkDate.toISOString().substring(0, 10);
+      if (records.includes(dateStr)) {
+        streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+    return streak;
+  };
+
+  const computeLevel = (points: number): string => {
+    if (points >= 500) return 'Diamond';
+    if (points >= 300) return 'Elite';
+    if (points >= 150) return 'Pro';
+    if (points >= 50) return 'Rising';
+    return 'Rookie';
+  };
+
+  const computeBadges = (
+    streak: number,
+    completedTasks: number,
+    completedIPAs: number,
+    completionRate: number,
+    userId: string
+  ): string[] => {
+    const badges: string[] = [];
+    if (streak >= 3) badges.push('Consistent');
+    if (completedIPAs >= 3) badges.push('IPA Champion');
+    if (completedTasks >= 5) badges.push('Task Master');
+    if (completionRate >= 80) badges.push('Top Performer');
+    // Early Bird: has any attendance record with clockIn before 9:45 AM
+    const earlyRecord = db.attendance.find((a) => {
+      if (a.userId !== userId) return false;
+      const clockInStr = a.clockIn || '';
+      const match = clockInStr.match(/^(\d+):(\d+)\s*(AM|PM)$/i);
+      if (!match) return false;
+      let h = parseInt(match[1], 10);
+      const m = parseInt(match[2], 10);
+      const ampm = match[3].toUpperCase();
+      if (ampm === 'PM' && h !== 12) h += 12;
+      if (ampm === 'AM' && h === 12) h = 0;
+      const totalMin = h * 60 + m;
+      return totalMin <= 585; // before 9:45 AM = 585 minutes
+    });
+    if (earlyRecord) badges.push('Early Bird');
+    return badges;
+  };
+
+  const leaderboard = members.map((member) => {
+    const memberTasks = db.tasks.filter((t) => t.assigneeId === member.id);
+    const completedTasks = memberTasks.filter((t) => t.status === 'completed').length;
+    const totalTasks = memberTasks.length;
+    const completionRate = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+
+    const ipaTasksAll = memberTasks.filter((t) => t.isIPA === true);
+    const completedIPAs = ipaTasksAll.filter((t) => t.status === 'completed').length;
+    const totalIPAs = ipaTasksAll.length;
+    const ipaCompletionRate = totalIPAs > 0 ? Math.round((completedIPAs / totalIPAs) * 100) : 0;
+
+    const streak = computeStreak(member.id);
+
+    // XP formula: streak * 10 + completedTasks * 5 + completedIPAs * 15
+    const points = streak * 10 + completedTasks * 5 + completedIPAs * 15;
+    const level = computeLevel(points);
+    const badges = computeBadges(streak, completedTasks, completedIPAs, completionRate, member.id);
+
+    const { password: _, ...safeUser } = member as any;
+    return {
+      ...safeUser,
+      avatar: member.profileImage,
+      streak,
+      totalTasks,
+      completedTasks,
+      completionRate,
+      completedIPAs,
+      totalIPAs,
+      ipaCompletionRate,
+      points,
+      level,
+      badges,
+      rank: 0, // will be set after sorting
+    };
+  });
+
+  // Sort by points desc, then streak desc as tiebreaker
+  leaderboard.sort((a, b) => b.points - a.points || b.streak - a.streak);
+  leaderboard.forEach((m, i) => { m.rank = i + 1; });
+
+  const topPerformer = leaderboard[0] || null;
+  const highestStreak = leaderboard.length > 0 ? Math.max(...leaderboard.map((m) => m.streak)) : 0;
+  const avgCompletionRate =
+    leaderboard.length > 0
+      ? Math.round(leaderboard.reduce((acc, m) => acc + m.completionRate, 0) / leaderboard.length)
+      : 0;
+  const activeMembers = leaderboard.filter((m) => m.streak > 0 || m.completedTasks > 0).length;
+
+  return res.json({
+    leaderboard,
+    summary: {
+      topPerformer,
+      highestStreak,
+      avgCompletionRate,
+      activeMembers,
+    },
+  });
+});
+
 export default router;
+

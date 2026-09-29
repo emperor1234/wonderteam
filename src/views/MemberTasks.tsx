@@ -199,7 +199,9 @@ export const MemberTasks: React.FC = () => {
       <AIPrioritizerModal
         isOpen={isAIPrioritizerOpen}
         onClose={() => setIsAIPrioritizerOpen(false)}
-        onPrioritized={() => {
+        tasks={tasks}
+        userId={user?.id}
+        onPrioritiesApplied={() => {
           fetchTasks();
         }}
       />

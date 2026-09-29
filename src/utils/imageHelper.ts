@@ -1,5 +1,5 @@
 /**
- * Image helper utility for Greenline
+ * Image helper utility for WonderTeam
  * Strictly enforces and optimizes profile images under 10KB
  */
 

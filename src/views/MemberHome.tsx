@@ -489,7 +489,6 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
         isOpen={isAddModalOpen}
         onClose={() => setIsAddModalOpen(false)}
         onTaskCreated={fetchTasks}
-        defaultType="personal"
       />
 
       <AttendanceHistoryModal

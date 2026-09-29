@@ -41,7 +41,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Greenline server listening on port ${PORT} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
+    console.log(`WonderTeam server listening on port ${PORT} (NODE_ENV=${process.env.NODE_ENV || 'development'})`);
   });
 }
 
