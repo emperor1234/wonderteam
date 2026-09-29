@@ -1,6 +1,8 @@
-import { Router, Request, Response } from 'express';
+import { Router } from 'express';
+import type { Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
-import { getDb, saveDb, User, AttendanceRecord, TaskItem, SpendingRecord, DatabaseState } from './db.ts';
+import { getDb, saveDb } from './db.ts';
+import type { User, AttendanceRecord, TaskItem, SpendingRecord, DatabaseState } from './db.ts';
 
 const router = Router();
 
