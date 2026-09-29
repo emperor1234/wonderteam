@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { neon } from '@neondatabase/serverless';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -495,6 +496,43 @@ export function buildProductionInitialData(): DatabaseState {
 }
 
 let inMemoryDb: DatabaseState | null = null;
+let neonTableInitialized = false;
+
+// Neon PostgreSQL connection helper
+function getDatabaseUrl(): string | undefined {
+  return (
+    process.env.DATABASE_URL ||
+    process.env.POSTGRES_URL ||
+    process.env.POSTGRES_PRISMA_URL
+  );
+}
+
+function getNeonSql() {
+  const url = getDatabaseUrl();
+  if (!url) return null;
+  try {
+    return neon(url);
+  } catch (err) {
+    console.error('Failed to initialize Neon client:', err);
+    return null;
+  }
+}
+
+async function ensureNeonTable(sql: any): Promise<void> {
+  if (neonTableInitialized) return;
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS wonderteam_state (
+        key VARCHAR(50) PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `;
+    neonTableInitialized = true;
+  } catch (err) {
+    console.error('Failed to ensure Neon table:', err);
+  }
+}
 
 function ensureDbFile(): DatabaseState {
   try {
@@ -519,34 +557,69 @@ function ensureDbFile(): DatabaseState {
   }
 }
 
-export function getDb(): DatabaseState {
+export async function getDb(): Promise<DatabaseState> {
+  const sql = getNeonSql();
+  if (sql) {
+    try {
+      await ensureNeonTable(sql);
+      const rows = await sql`
+        SELECT data FROM wonderteam_state WHERE key = 'main' LIMIT 1;
+      `;
+      if (rows && rows.length > 0 && rows[0].data) {
+        const state = rows[0].data as DatabaseState;
+        inMemoryDb = state;
+        return state;
+      }
+      // If table exists but has no data, initialize with production data
+      const initial = buildProductionInitialData();
+      await sql`
+        INSERT INTO wonderteam_state (key, data, updated_at)
+        VALUES ('main', ${JSON.stringify(initial)}, NOW())
+        ON CONFLICT (key) DO NOTHING;
+      `;
+      inMemoryDb = initial;
+      return initial;
+    } catch (err) {
+      console.error('Error querying Neon PostgreSQL, falling back to local storage:', err);
+    }
+  }
+
+  // Fallback to in-memory or local JSON file
   if (inMemoryDb) {
     return inMemoryDb;
   }
   return ensureDbFile();
 }
 
-export function saveDb(data: DatabaseState): void {
+export async function saveDb(data: DatabaseState): Promise<void> {
+  inMemoryDb = data;
+  const sql = getNeonSql();
+  if (sql) {
+    try {
+      await ensureNeonTable(sql);
+      await sql`
+        INSERT INTO wonderteam_state (key, data, updated_at)
+        VALUES ('main', ${JSON.stringify(data)}, NOW())
+        ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data, updated_at = NOW();
+      `;
+      return;
+    } catch (err) {
+      console.error('Error saving to Neon PostgreSQL, writing to local fallback:', err);
+    }
+  }
+
+  // Fallback to local filesystem
   try {
-    inMemoryDb = data;
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Failed to write database file:', err);
+    console.error('Failed to write local database file:', err);
   }
 }
 
-export function resetToProductionData(): void {
-  try {
-    const fresh = buildProductionInitialData();
-    inMemoryDb = fresh;
-    if (!fs.existsSync(DATA_DIR)) {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-    }
-    fs.writeFileSync(DB_FILE, JSON.stringify(fresh, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to reset db file:', err);
-  }
+export async function resetToProductionData(): Promise<void> {
+  const fresh = buildProductionInitialData();
+  await saveDb(fresh);
 }

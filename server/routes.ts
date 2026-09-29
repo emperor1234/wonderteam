@@ -182,7 +182,7 @@ function formatDuration(minutes: number): string {
 // AUTH ROUTES
 // -------------------------------------------------------------
 
-router.post('/auth/register', (req: Request, res: Response) => {
+router.post('/auth/register', async (req: Request, res: Response) => {
   const {
     name,
     email,
@@ -228,7 +228,7 @@ router.post('/auth/register', (req: Request, res: Response) => {
     }
   }
 
-  const db = getDb();
+  const db = await getDb();
   const existing = db.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
   if (existing) {
     return res.status(400).json({ error: 'An account with this email already exists.' });
@@ -272,15 +272,15 @@ router.post('/auth/register', (req: Request, res: Response) => {
     });
   }
 
-  saveDb(db);
+  await saveDb(db);
 
   const { password: _, ...userWithoutPassword } = newUser;
   return res.status(201).json({ user: userWithoutPassword });
 });
 
-router.post('/auth/login', (req: Request, res: Response) => {
+router.post('/auth/login', async (req: Request, res: Response) => {
   const { email, password } = req.body;
-  const db = getDb();
+  const db = await getDb();
 
   const user = db.users.find(
     (u) => u.email.toLowerCase() === email?.toLowerCase() && u.password === password
@@ -294,15 +294,15 @@ router.post('/auth/login', (req: Request, res: Response) => {
   return res.json({ user: userWithoutPassword });
 });
 
-router.get('/auth/users', (_req: Request, res: Response) => {
-  const db = getDb();
+router.get('/auth/users', async (_req: Request, res: Response) => {
+  const db = await getDb();
   const sanitized = db.users.map(({ password: _, ...rest }) => rest);
   return res.json(sanitized);
 });
 
-router.post('/auth/update-profile', (req: Request, res: Response) => {
+router.post('/auth/update-profile', async (req: Request, res: Response) => {
   const { userId, sponsorName, uplineDirector, uplineWorldTeamLeader, profileImage } = req.body;
-  const db = getDb();
+  const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found' });
@@ -320,7 +320,7 @@ router.post('/auth/update-profile', (req: Request, res: Response) => {
   if (uplineDirector) user.uplineDirector = uplineDirector;
   if (uplineWorldTeamLeader) user.uplineWorldTeamLeader = uplineWorldTeamLeader;
 
-  saveDb(db);
+  await saveDb(db);
   const { password: _, ...sanitized } = user;
   return res.json({ user: sanitized });
 });
@@ -329,13 +329,13 @@ router.post('/auth/update-profile', (req: Request, res: Response) => {
 // ATTENDANCE ROUTES
 // -------------------------------------------------------------
 
-router.get('/attendance/status', (req: Request, res: Response) => {
+router.get('/attendance/status', async (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   if (!userId) {
     return res.status(400).json({ error: 'userId is required' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
   const today = getTodayDateStr();
   const todayRecord = db.attendance.find((a) => a.userId === userId && a.date === today);
@@ -380,7 +380,7 @@ router.get('/attendance/status', (req: Request, res: Response) => {
   });
 });
 
-router.post('/attendance/clock-in', (req: Request, res: Response) => {
+router.post('/attendance/clock-in', async (req: Request, res: Response) => {
   const {
     userId,
     clientLocation,
@@ -390,7 +390,7 @@ router.post('/attendance/clock-in', (req: Request, res: Response) => {
     simulatedTime,
   } = req.body;
 
-  const db = getDb();
+  const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
   if (!user) {
     return res.status(404).json({ error: 'User not found in records' });
@@ -503,13 +503,13 @@ router.post('/attendance/clock-in', (req: Request, res: Response) => {
     db.attendance.push(record);
   }
 
-  saveDb(db);
+  await saveDb(db);
   return res.json({ success: true, record, timingDetail, gmt1 });
 });
 
-router.post('/attendance/clock-out', (req: Request, res: Response) => {
+router.post('/attendance/clock-out', async (req: Request, res: Response) => {
   const { userId } = req.body;
-  const db = getDb();
+  const db = await getDb();
   const today = getTodayDateStr();
   const record = db.attendance.find((a) => a.userId === userId && a.date === today);
 
@@ -528,13 +528,13 @@ router.post('/attendance/clock-out', (req: Request, res: Response) => {
   record.status = 'clocked_out';
   record.lastActivity = `Shift completed (${record.durationFormatted})`;
 
-  saveDb(db);
+  await saveDb(db);
   return res.json({ success: true, record });
 });
 
-router.get('/attendance/history', (req: Request, res: Response) => {
+router.get('/attendance/history', async (req: Request, res: Response) => {
   const userId = req.query.userId as string;
-  const db = getDb();
+  const db = await getDb();
   let list = db.attendance;
   if (userId) {
     list = list.filter((a) => a.userId === userId);
@@ -545,8 +545,8 @@ router.get('/attendance/history', (req: Request, res: Response) => {
 });
 
 // Admin Team Attendance overview
-router.get('/attendance/team', (_req: Request, res: Response) => {
-  const db = getDb();
+router.get('/attendance/team', async (_req: Request, res: Response) => {
+  const db = await getDb();
   const today = getTodayDateStr();
   const members = db.users.filter((u) => u.role === 'member');
 
@@ -616,9 +616,9 @@ router.get('/attendance/team', (_req: Request, res: Response) => {
 // TASKS ROUTES
 // -------------------------------------------------------------
 
-router.get('/tasks', (req: Request, res: Response) => {
+router.get('/tasks', async (req: Request, res: Response) => {
   const { userId, role, status, priority, type } = req.query;
-  const db = getDb();
+  const db = await getDb();
 
   let tasks = [...db.tasks];
 
@@ -642,9 +642,9 @@ router.get('/tasks', (req: Request, res: Response) => {
   return res.json(tasks);
 });
 
-router.post('/tasks/toggle', (req: Request, res: Response) => {
+router.post('/tasks/toggle', async (req: Request, res: Response) => {
   const { taskId } = req.body;
-  const db = getDb();
+  const db = await getDb();
   const task = db.tasks.find((t) => t.id === taskId);
   if (!task) {
     return res.status(404).json({ error: 'Task not found' });
@@ -652,18 +652,18 @@ router.post('/tasks/toggle', (req: Request, res: Response) => {
 
   task.status = task.status === 'completed' ? 'todo' : 'completed';
   task.updatedAt = new Date().toISOString();
-  saveDb(db);
+  await saveDb(db);
 
   return res.json({ success: true, task });
 });
 
-router.post('/tasks/create', (req: Request, res: Response) => {
+router.post('/tasks/create', async (req: Request, res: Response) => {
   const { title, description, assigneeId, type = 'assigned', priority = 'medium', dueDate, dueTime } = req.body;
   if (!title) {
     return res.status(400).json({ error: 'Task title is required' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   const assignee = db.users.find((u) => u.id === assigneeId) || db.users[0];
 
   const newTask: TaskItem = {
@@ -682,14 +682,14 @@ router.post('/tasks/create', (req: Request, res: Response) => {
   };
 
   db.tasks.unshift(newTask);
-  saveDb(db);
+  await saveDb(db);
 
   return res.status(201).json({ success: true, task: newTask });
 });
 
-router.post('/tasks/update', (req: Request, res: Response) => {
+router.post('/tasks/update', async (req: Request, res: Response) => {
   const { taskId, status, priority, dueDate, dueTime, description, title } = req.body;
-  const db = getDb();
+  const db = await getDb();
   const task = db.tasks.find((t) => t.id === taskId);
   if (!task) {
     return res.status(404).json({ error: 'Task not found' });
@@ -703,7 +703,7 @@ router.post('/tasks/update', (req: Request, res: Response) => {
   if (title) task.title = title;
   task.updatedAt = new Date().toISOString();
 
-  saveDb(db);
+  await saveDb(db);
   return res.json({ success: true, task });
 });
 
@@ -711,7 +711,7 @@ router.post('/tasks/update', (req: Request, res: Response) => {
 // SPENDING ROUTES (STRICT PRIVACY - ADMINS FORBIDDEN)
 // -------------------------------------------------------------
 
-router.get('/spending', (req: Request, res: Response) => {
+router.get('/spending', async (req: Request, res: Response) => {
   const { userId, role } = req.query;
 
   // STRICT DESIGN CONSTITUTION RULE:
@@ -727,7 +727,7 @@ router.get('/spending', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'userId is required' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   const userSpend = db.spending.filter((s) => s.userId === userId);
 
   // Calculate current month's spending
@@ -748,7 +748,7 @@ router.get('/spending', (req: Request, res: Response) => {
   });
 });
 
-router.post('/spending/add', (req: Request, res: Response) => {
+router.post('/spending/add', async (req: Request, res: Response) => {
   const { userId, role, merchant, amount, category, description, date, receipt } = req.body;
 
   if (role === 'admin') {
@@ -766,7 +766,7 @@ router.post('/spending/add', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Amount must be a positive number' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   const newRecord: SpendingRecord = {
     id: `sp_${Date.now()}`,
     userId,
@@ -780,7 +780,7 @@ router.post('/spending/add', (req: Request, res: Response) => {
   };
 
   db.spending.unshift(newRecord);
-  saveDb(db);
+  await saveDb(db);
 
   return res.status(201).json({ success: true, record: newRecord });
 });
@@ -789,8 +789,8 @@ router.post('/spending/add', (req: Request, res: Response) => {
 // TEAM OVERVIEW (FOR ADMIN)
 // -------------------------------------------------------------
 
-router.get('/team', (_req: Request, res: Response) => {
-  const db = getDb();
+router.get('/team', async (_req: Request, res: Response) => {
+  const db = await getDb();
   const members = db.users.map(({ password: _, ...user }) => {
     const assignedTasks = db.tasks.filter((t) => t.assigneeId === user.id);
     const completedTasks = assignedTasks.filter((t) => t.status === 'completed').length;
@@ -957,7 +957,7 @@ function getCuratedFallbackBooks(category: string) {
   return defaults[category] || defaults['Personal Growth'];
 }
 
-router.get('/library/categories', (_req: Request, res: Response) => {
+router.get('/library/categories', async (_req: Request, res: Response) => {
   return res.json(Object.keys(BOOK_CATEGORIES));
 });
 
@@ -1043,24 +1043,24 @@ router.get('/library/books', async (req: Request, res: Response) => {
 });
 
 // Saved Books / Personal Bookshelf
-router.get('/library/saved', (req: Request, res: Response) => {
+router.get('/library/saved', async (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   if (!userId) {
     return res.status(400).json({ error: 'userId is required' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   const saved = (db.savedBooks || []).filter((b) => b.userId === userId);
   return res.json(saved);
 });
 
-router.post('/library/save', (req: Request, res: Response) => {
+router.post('/library/save', async (req: Request, res: Response) => {
   const { userId, bookKey, title, author, coverId, iaId, category } = req.body;
   if (!userId || !bookKey || !title) {
     return res.status(400).json({ error: 'userId, bookKey, and title are required' });
   }
 
-  const db = getDb();
+  const db = await getDb();
   if (!db.savedBooks) {
     db.savedBooks = [];
   }
@@ -1085,13 +1085,13 @@ router.post('/library/save', (req: Request, res: Response) => {
   };
 
   db.savedBooks.unshift(newSaved);
-  saveDb(db);
+  await saveDb(db);
   return res.status(201).json({ success: true, savedBook: newSaved });
 });
 
-router.post('/library/progress', (req: Request, res: Response) => {
+router.post('/library/progress', async (req: Request, res: Response) => {
   const { id, progressPercent, status, notes } = req.body;
-  const db = getDb();
+  const db = await getDb();
   if (!db.savedBooks) {
     return res.status(404).json({ error: 'Book record not found' });
   }
@@ -1112,7 +1112,7 @@ router.post('/library/progress', (req: Request, res: Response) => {
   }
   book.lastReadDate = getTodayDateStr();
 
-  saveDb(db);
+  await saveDb(db);
   return res.json({ success: true, book });
 });
 
@@ -1574,7 +1574,7 @@ function getWATPeriodDetails(hour: number) {
 
 router.get('/ai/motivational-quote', async (req: Request, res: Response) => {
   const userId = req.query.userId as string;
-  const db = getDb();
+  const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
 
   // Time details in WAT (GMT+1)
@@ -1871,7 +1871,7 @@ Provide strict JSON output adhering to this structure:
 
   // If saveToDb is true and user is known, update database tasks
   if (saveToDb && userId) {
-    const db = getDb();
+    const db = await getDb();
     if (db.tasks) {
       for (const pTask of result.prioritizedTasks) {
         const existing = db.tasks.find((t) => t.id === pTask.id);
@@ -1884,7 +1884,7 @@ Provide strict JSON output adhering to this structure:
           existing.updatedAt = new Date().toISOString();
         }
       }
-      saveDb(db);
+      await saveDb(db);
     }
   }
 
@@ -1896,8 +1896,8 @@ Provide strict JSON output adhering to this structure:
 // ADMIN LEADERBOARD - GAMIFIED TEAM PERFORMANCE TRACKING
 // -------------------------------------------------------------
 
-router.get('/admin/leaderboard', (_req: Request, res: Response) => {
-  const db = getDb();
+router.get('/admin/leaderboard', async (_req: Request, res: Response) => {
+  const db = await getDb();
   const members = db.users.filter((u) => u.role === 'member');
   const todayStr = getTodayDateStr();
 
