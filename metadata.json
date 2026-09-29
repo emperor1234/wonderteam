@@ -1,0 +1,7 @@
+{
+  "name": "WonderTeam",
+  "description": "Networking and freelancing team operations, daily attendance register streaks, personal to-do list planner, and growth library.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
