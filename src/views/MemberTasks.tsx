@@ -17,7 +17,7 @@ export const MemberTasks: React.FC = () => {
   const fetchTasks = async () => {
     if (!user) return;
     try {
-      const res = await fetch(`/api/tasks?userId=${user.id}&role=member`);
+      const res = await fetch(`/api/tasks?userId=${user.id}`);
       if (res.ok) {
         const data = await res.json();
         setTasks(data);
@@ -50,6 +50,43 @@ export const MemberTasks: React.FC = () => {
       });
     } catch (err) {
       console.error('Failed to toggle task:', err);
+      fetchTasks();
+    }
+  };
+
+  const handleDelete = async (taskId: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+
+    try {
+      await fetch('/api/tasks/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId }),
+      });
+    } catch (err) {
+      console.error('Failed to delete task:', err);
+      fetchTasks();
+    }
+  };
+
+  const handleClearCompleted = async () => {
+    const completedTasks = tasks.filter((t) => t.status === 'completed');
+    if (completedTasks.length === 0) return;
+
+    setTasks((prev) => prev.filter((t) => t.status !== 'completed'));
+
+    try {
+      await Promise.all(
+        completedTasks.map((t) =>
+          fetch('/api/tasks/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ taskId: t.id }),
+          })
+        )
+      );
+    } catch (err) {
+      console.error('Failed to clear completed tasks:', err);
       fetchTasks();
     }
   };
@@ -141,6 +178,18 @@ export const MemberTasks: React.FC = () => {
         </button>
       </div>
 
+      {activeTab === 'completed' && filteredTasks.length > 0 && (
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleClearCompleted}
+            className="text-xs text-[#89928E] hover:text-[#C84C4C] font-semibold transition-colors px-2 py-1"
+          >
+            Clear completed tasks
+          </button>
+        </div>
+      )}
+
       {/* Task List */}
       <div className="space-y-2">
         {loading ? (
@@ -181,7 +230,12 @@ export const MemberTasks: React.FC = () => {
           </div>
         ) : (
           filteredTasks.map((task) => (
-            <TaskRow key={task.id} task={task} onToggle={handleToggle} />
+            <TaskRow
+              key={task.id}
+              task={task}
+              onToggle={handleToggle}
+              onDelete={handleDelete}
+            />
           ))
         )}
       </div>

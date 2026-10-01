@@ -201,6 +201,7 @@ export interface SavedBookRecord {
   title: string;
   author: string;
   coverId?: number;
+  coverUrl?: string;
   iaId?: string;
   category: string;
   progressPercent: number;

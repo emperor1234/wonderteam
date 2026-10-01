@@ -663,9 +663,12 @@ router.get('/tasks', async (req: Request, res: Response) => {
 
   let tasks = [...db.tasks];
 
-  // If member role, only show tasks assigned to them or their personal tasks
-  if (role === 'member' && userId) {
+  // If userId is supplied, filter to tasks for that specific user
+  if (userId) {
     tasks = tasks.filter((t) => t.assigneeId === userId);
+  } else if (role === 'member') {
+    // If member without userId, return empty to prevent data leak
+    tasks = [];
   }
 
   if (type) {
@@ -699,20 +702,21 @@ router.post('/tasks/toggle', async (req: Request, res: Response) => {
 });
 
 router.post('/tasks/create', async (req: Request, res: Response) => {
-  const { title, description, assigneeId, type = 'assigned', priority = 'medium', dueDate, dueTime } = req.body;
-  if (!title) {
+  const { title, description, assigneeId, type = 'personal', priority = 'medium', dueDate, dueTime } = req.body;
+  if (!title || !title.trim()) {
     return res.status(400).json({ error: 'Task title is required' });
   }
 
   const db = await getDb();
-  const assignee = db.users.find((u) => u.id === assigneeId) || db.users[0];
+  const targetUserId = assigneeId || (req.headers['x-user-id'] as string) || (db.users[0]?.id) || 'usr_personal';
+  const assignee = db.users.find((u) => u.id === targetUserId);
 
   const newTask: TaskItem = {
-    id: `task_${Date.now()}`,
-    title,
-    description: description || '',
-    assigneeId: assignee.id,
-    assigneeName: assignee.name,
+    id: `task_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    title: title.trim(),
+    description: (description || '').trim(),
+    assigneeId: targetUserId,
+    assigneeName: assignee?.name || req.body.assigneeName || 'Member',
     type: type === 'personal' ? 'personal' : 'assigned',
     status: 'todo',
     priority: ['low', 'medium', 'high'].includes(priority) ? priority : 'medium',
@@ -726,6 +730,26 @@ router.post('/tasks/create', async (req: Request, res: Response) => {
   await saveDb(db);
 
   return res.status(201).json({ success: true, task: newTask });
+});
+
+router.post('/tasks/delete', async (req: Request, res: Response) => {
+  const { taskId } = req.body;
+  if (!taskId) {
+    return res.status(400).json({ error: 'taskId is required' });
+  }
+  const db = await getDb();
+  const beforeLen = db.tasks.length;
+  db.tasks = db.tasks.filter((t) => t.id !== taskId);
+  await saveDb(db);
+  return res.json({ success: true, count: db.tasks.length, deleted: beforeLen !== db.tasks.length });
+});
+
+router.delete('/tasks/:id', async (req: Request, res: Response) => {
+  const taskId = req.params.id;
+  const db = await getDb();
+  db.tasks = db.tasks.filter((t) => t.id !== taskId);
+  await saveDb(db);
+  return res.json({ success: true });
 });
 
 router.post('/tasks/update', async (req: Request, res: Response) => {
@@ -921,95 +945,429 @@ const BOOK_CATEGORIES: Record<string, string> = {
 const booksCache = new Map<string, { data: any; timestamp: number }>();
 const dictionaryCache = new Map<string, { data: any; timestamp: number }>();
 
-// Fallback curated public books
-function getCuratedFallbackBooks(category: string) {
-  const defaults: Record<string, any[]> = {
-    'Personal Growth': [
-      {
-        key: '/works/OL27479W',
-        title: 'As a Man Thinketh',
-        author_name: ['James Allen'],
-        first_publish_year: 1903,
-        ebook_access: 'public',
-        cover_i: 8231856,
-        ia: ['asamanthinketh00alle'],
-      },
-      {
-        key: '/works/OL15366471W',
-        title: 'The Art of War',
-        author_name: ['Sunzi'],
-        first_publish_year: 1910,
-        ebook_access: 'public',
-        cover_i: 12547191,
-        ia: ['artofwar00sunz'],
-      },
-      {
-        key: '/works/OL257943W',
-        title: 'Self-Reliance and Other Essays',
-        author_name: ['Ralph Waldo Emerson'],
-        first_publish_year: 1841,
-        ebook_access: 'public',
-        cover_i: 6479532,
-        ia: ['selfreliance00emer'],
-      },
-    ],
-    'Leadership': [
-      {
-        key: '/works/OL262758W',
-        title: 'The Prince',
-        author_name: ['Niccolò Machiavelli'],
-        first_publish_year: 1532,
-        ebook_access: 'public',
-        cover_i: 9255566,
-        ia: ['prince00machrich'],
-      },
-      {
-        key: '/works/OL1168007W',
-        title: 'Character and Leadership',
-        author_name: ['Samuel Smiles'],
-        first_publish_year: 1871,
-        ebook_access: 'public',
-        cover_i: 7214532,
-        ia: ['charactersmiles00smil'],
-      },
-    ],
-    'Financial Literacy': [
-      {
-        key: '/works/OL1583002W',
-        title: 'The Richest Man in Babylon',
-        author_name: ['George S. Clason'],
-        first_publish_year: 1926,
-        ebook_access: 'public',
-        cover_i: 10452912,
-        ia: ['richestmaninbaby00clas'],
-      },
-      {
-        key: '/works/OL181591W',
-        title: 'The Way to Wealth',
-        author_name: ['Benjamin Franklin'],
-        first_publish_year: 1758,
-        ebook_access: 'public',
-        cover_i: 8329104,
-        ia: ['waytowealth00fran'],
-      },
-    ],
-  };
+// Comprehensive Curated Growth, Business, Sales & Leadership Library
+export const CURATED_LIBRARY_BOOKS: any[] = [
+  {
+    key: '/curated/think-and-grow-rich',
+    title: 'Think and Grow Rich',
+    author_name: ['Napoleon Hill'],
+    category: 'Personal Growth',
+    first_publish_year: 1937,
+    coverUrl: 'https://covers.openlibrary.org/b/id/10452912-M.jpg',
+    cover_i: 10452912,
+    ia: ['thinkgrowrich0000hill'],
+    googleBookId: 'j6fSDwAAQBAJ',
+    description: 'The definitive classic on personal achievement and building wealth through burning desire, autosuggestion, persistence, and mastermind alignment.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/atomic-habits',
+    title: 'Atomic Habits',
+    author_name: ['James Clear'],
+    category: 'Habit Building',
+    first_publish_year: 2018,
+    coverUrl: 'https://covers.openlibrary.org/b/id/12886416-M.jpg',
+    cover_i: 12886416,
+    googleBookId: 'fFCjDwAAQBAJ',
+    description: 'A proven framework for improving 1% every single day. Shows how small compounding habits transform health, productivity, and wealth.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/psychology-of-money',
+    title: 'The Psychology of Money',
+    author_name: ['Morgan Housel'],
+    category: 'Financial Literacy',
+    first_publish_year: 2020,
+    coverUrl: 'https://covers.openlibrary.org/b/id/11181817-M.jpg',
+    cover_i: 11181817,
+    googleBookId: 'wvTXDwAAQBAJ',
+    description: '19 short stories exploring the strange ways people think about money and teaching you how to make better sense of financial decisions.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/richest-man-in-babylon',
+    title: 'The Richest Man in Babylon',
+    author_name: ['George S. Clason'],
+    category: 'Financial Literacy',
+    first_publish_year: 1926,
+    coverUrl: 'https://covers.openlibrary.org/b/id/10452912-M.jpg',
+    cover_i: 10452912,
+    ia: ['richestmaninbaby00clas'],
+    googleBookId: '7Tf8CwAAQBAJ',
+    description: 'Timeless Babylonian parables detailing the fundamental laws of financial independence: pay yourself first, live below your means, and make your gold work for you.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/how-to-win-friends',
+    title: 'How to Win Friends and Influence People',
+    author_name: ['Dale Carnegie'],
+    category: 'Relationships',
+    first_publish_year: 1936,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8235109-M.jpg',
+    cover_i: 8235109,
+    ia: ['howtowinfriendsp0000carn'],
+    googleBookId: '1dYkDwAAQBAJ',
+    description: 'Master interpersonal communication, earn trust quickly, become a persuasive communicator, and lead without friction.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/7-habits',
+    title: 'The 7 Habits of Highly Effective People',
+    author_name: ['Stephen R. Covey'],
+    category: 'Personal Growth',
+    first_publish_year: 1989,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8315182-M.jpg',
+    cover_i: 8315182,
+    ia: ['7habitsofhighlye00cove'],
+    googleBookId: '3mE4CwAAQBAJ',
+    description: 'A holistic, integrated approach for solving personal and professional problems based on timeless character principles and proactive choices.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/rich-dad-poor-dad',
+    title: 'Rich Dad Poor Dad',
+    author_name: ['Robert T. Kiyosaki'],
+    category: 'Financial Literacy',
+    first_publish_year: 1997,
+    coverUrl: 'https://covers.openlibrary.org/b/id/12547191-M.jpg',
+    cover_i: 12547191,
+    googleBookId: '86n1DwAAQBAJ',
+    description: 'What the wealthy teach their children about money and assets. Explodes the myth that high income equals financial freedom.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/art-of-war',
+    title: 'The Art of War',
+    author_name: ['Sun Tzu'],
+    category: 'Leadership',
+    first_publish_year: 1910,
+    coverUrl: 'https://covers.openlibrary.org/b/id/12547191-M.jpg',
+    cover_i: 12547191,
+    ia: ['artofwar00sunz'],
+    googleBookId: 'g4o_AQAAIAAJ',
+    description: 'Ancient tactical wisdom on positioning, timing, psychological discipline, and turning chaos into opportunity.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/as-a-man-thinketh',
+    title: 'As a Man Thinketh',
+    author_name: ['James Allen'],
+    category: 'Personal Growth',
+    first_publish_year: 1903,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8231856-M.jpg',
+    cover_i: 8231856,
+    ia: ['asamanthinketh00alle'],
+    googleBookId: '3zB4AAAAMAAJ',
+    description: 'A masterwork on how mental thoughts and focus create our character, environment, and physical health.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/compound-effect',
+    title: 'The Compound Effect',
+    author_name: ['Darren Hardy'],
+    category: 'Personal Growth',
+    first_publish_year: 2010,
+    coverUrl: 'https://covers.openlibrary.org/b/id/10542387-M.jpg',
+    cover_i: 10542387,
+    googleBookId: 'y_6cDwAAQBAJ',
+    description: 'No gimmicks. Learn the exact operating system to multiply your success through small, unsexy daily disciplines executed consistently over time.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/deep-work',
+    title: 'Deep Work: Rules for Focused Success',
+    author_name: ['Cal Newport'],
+    category: 'Productivity',
+    first_publish_year: 2016,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8575023-M.jpg',
+    cover_i: 8575023,
+    googleBookId: 'u_t0CgAAQBAJ',
+    description: 'Master deep concentration in a distracted world to produce elite, rare value faster and outpace the competition.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/10x-rule',
+    title: 'The 10X Rule',
+    author_name: ['Grant Cardone'],
+    category: 'Sales & Networking',
+    first_publish_year: 2011,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8682132-M.jpg',
+    cover_i: 8682132,
+    googleBookId: '6bT0DwAAQBAJ',
+    description: 'Scale your goals by 10X and multiply your daily actions by 10X to dominate your industry and eliminate fear through massive execution.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/go-pro',
+    title: 'Go Pro: 7 Steps to Becoming a Network Marketing Professional',
+    author_name: ['Eric Worre'],
+    category: 'Network Marketing',
+    first_publish_year: 2013,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8271923-M.jpg',
+    cover_i: 8271923,
+    googleBookId: '13PXDwAAQBAJ',
+    description: 'The ultimate blueprint for direct selling: how to find prospects, invite with confidence, present powerfully, and coach new partners.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/extreme-ownership',
+    title: 'Extreme Ownership: How Navy SEALs Lead and Win',
+    author_name: ['Jocko Willink', 'Leif Babin'],
+    category: 'Leadership',
+    first_publish_year: 2015,
+    coverUrl: 'https://covers.openlibrary.org/b/id/9262104-M.jpg',
+    cover_i: 9262104,
+    googleBookId: 'c7_hCgAAQBAJ',
+    description: 'Leaders must own everything in their world. No excuses, no blaming circumstances — true ownership turns underperforming teams into championship units.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/start-with-why',
+    title: 'Start with Why',
+    author_name: ['Simon Sinek'],
+    category: 'Leadership',
+    first_publish_year: 2009,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8254101-M.jpg',
+    cover_i: 8254101,
+    googleBookId: '4f2gCgAAQBAJ',
+    description: 'How leaders build cult-like loyalty and inspire movements by clearly communicating their core purpose before explaining what they sell.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/good-to-great',
+    title: 'Good to Great',
+    author_name: ['Jim Collins'],
+    category: 'Leadership',
+    first_publish_year: 2001,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8226019-M.jpg',
+    cover_i: 8226019,
+    googleBookId: '3R3wDwAAQBAJ',
+    description: 'Examines why certain businesses break away from mediocrity to achieve lasting greatness through disciplined people, disciplined thought, and disciplined action.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/eat-that-frog',
+    title: 'Eat That Frog! 21 Great Ways to Stop Procrastinating',
+    author_name: ['Brian Tracy'],
+    category: 'Productivity',
+    first_publish_year: 2001,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8228392-M.jpg',
+    cover_i: 8228392,
+    ia: ['eatthatfrog21gre0000trac'],
+    googleBookId: 'g6f_DwAAQBAJ',
+    description: 'Stop delaying the hard decisions. Knock out your highest-leverage task at the start of each morning to build unstoppable daily momentum.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/self-reliance',
+    title: 'Self-Reliance and Other Essays',
+    author_name: ['Ralph Waldo Emerson'],
+    category: 'Personal Growth',
+    first_publish_year: 1841,
+    coverUrl: 'https://covers.openlibrary.org/b/id/6479532-M.jpg',
+    cover_i: 6479532,
+    ia: ['selfreliance00emer'],
+    googleBookId: '1-W8QgAACAAJ',
+    description: 'A ringing anthem for individual conviction, trust in one’s own instincts, and standing tall against conformist societal expectations.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/the-prince',
+    title: 'The Prince',
+    author_name: ['Niccolò Machiavelli'],
+    category: 'Leadership',
+    first_publish_year: 1532,
+    coverUrl: 'https://covers.openlibrary.org/b/id/9255566-M.jpg',
+    cover_i: 9255566,
+    ia: ['prince00machrich'],
+    googleBookId: '3mE4CwAAQBAJ',
+    description: 'The historic manual on political power, statecraft, strategy, and navigating human nature in high-stakes environments.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/millionaire-fastlane',
+    title: 'The Millionaire Fastlane',
+    author_name: ['MJ DeMarco'],
+    category: 'Entrepreneurship',
+    first_publish_year: 2011,
+    coverUrl: 'https://covers.openlibrary.org/b/id/10542388-M.jpg',
+    cover_i: 10542388,
+    googleBookId: 'yF4oDwAAQBAJ',
+    description: 'Cut through conventional slow-lane financial dogma. Build scalable business systems that generate exponential wealth and buy back your time.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/zero-to-one',
+    title: 'Zero to One: Notes on Startups',
+    author_name: ['Peter Thiel', 'Blake Masters'],
+    category: 'Entrepreneurship',
+    first_publish_year: 2014,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8239012-M.jpg',
+    cover_i: 8239012,
+    googleBookId: '0bKjAwAAQBAJ',
+    description: 'How to build unique value propositions that create brand-new categories instead of competing in saturated red oceans.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/lean-startup',
+    title: 'The Lean Startup',
+    author_name: ['Eric Ries'],
+    category: 'Entrepreneurship',
+    first_publish_year: 2011,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8234850-M.jpg',
+    cover_i: 8234850,
+    googleBookId: 'r1k_DwAAQBAJ',
+    description: 'Validate ideas rapidly with Minimum Viable Products, measure client traction rigorously, and pivot before running out of runway.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/mindset',
+    title: 'Mindset: The New Psychology of Success',
+    author_name: ['Carol S. Dweck'],
+    category: 'Personal Growth',
+    first_publish_year: 2006,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8267123-M.jpg',
+    cover_i: 8267123,
+    ia: ['mindsetnewpsycho0000dwec'],
+    googleBookId: 'fdjqz0sPL2wC',
+    description: 'Discover how cultivating a growth mindset unlocks resilience, enables genuine learning from setbacks, and drives long-term mastery.',
+    ebook_access: 'public',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/power-of-discipline',
+    title: 'The Power of Discipline',
+    author_name: ['Daniel Walter'],
+    category: 'Habit Building',
+    first_publish_year: 2020,
+    coverUrl: 'https://covers.openlibrary.org/b/id/11181818-M.jpg',
+    cover_i: 11181818,
+    googleBookId: '96ZkEAAAQBAJ',
+    description: 'How to build self-control, mental toughness, and focus to defeat daily friction and execute on long-term targets.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+  {
+    key: '/curated/4-hour-workweek',
+    title: 'The 4-Hour Workweek',
+    author_name: ['Timothy Ferriss'],
+    category: 'Entrepreneurship',
+    first_publish_year: 2007,
+    coverUrl: 'https://covers.openlibrary.org/b/id/8238124-M.jpg',
+    cover_i: 8238124,
+    ia: ['4hourworkweekesc0000ferr'],
+    googleBookId: '2v4uDwAAQBAJ',
+    description: 'Lifestyle design for networkers and freelancers. Outsource low-value work, automate income pipelines, and reclaim your personal freedom.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'both',
+  },
+  {
+    key: '/curated/first-year-network-marketing',
+    title: 'Your First Year in Network Marketing',
+    author_name: ['Mark Yarnell', 'Rene Reid Yarnell'],
+    category: 'Network Marketing',
+    first_publish_year: 1998,
+    coverUrl: 'https://covers.openlibrary.org/b/id/6548912-M.jpg',
+    cover_i: 6548912,
+    googleBookId: 'z8SXDwAAQBAJ',
+    description: 'Overcome fear of rejection, support new recruits effectively, and build solid habits that carry you through the critical foundation phase.',
+    ebook_access: 'preview',
+    embeddable: true,
+    source: 'googlebooks',
+  },
+];
 
-  return defaults[category] || defaults['Personal Growth'];
+export function searchCuratedBooks(query?: string, category?: string): any[] {
+  let list = [...CURATED_LIBRARY_BOOKS];
+
+  if (category && category !== 'All' && category !== 'all') {
+    const catLower = category.toLowerCase().trim();
+    const catFiltered = list.filter((b) => b.category.toLowerCase().includes(catLower) || catLower.includes(b.category.toLowerCase()));
+    if (catFiltered.length > 0) {
+      list = catFiltered;
+    }
+  }
+
+  if (!query || !query.trim()) {
+    return list;
+  }
+
+  const q = query.toLowerCase().trim();
+  const words = q.split(/\s+/).filter((w) => w.length > 2);
+
+  const matched = list.filter((b) => {
+    const text = `${b.title} ${b.author_name.join(' ')} ${b.category} ${b.description}`.toLowerCase();
+    return text.includes(q) || words.some((w) => text.includes(w));
+  });
+
+  return matched.length > 0 ? matched : list;
 }
 
 router.get('/library/categories', async (_req: Request, res: Response) => {
-  return res.json(Object.keys(BOOK_CATEGORIES));
+  return res.json([
+    'All',
+    'Personal Growth',
+    'Habit Building',
+    'Financial Literacy',
+    'Leadership',
+    'Network Marketing',
+    'Sales & Networking',
+    'Entrepreneurship',
+    'Productivity',
+    'Relationships',
+  ]);
 });
 
 router.get('/library/books', async (req: Request, res: Response) => {
-  const selectedCategory = (req.query.category as string) || 'Personal Growth';
+  const selectedCategory = (req.query.category as string) || '';
   const search = (req.query.search as string)?.trim() || '';
-
-  const categoryQuery = BOOK_CATEGORIES[selectedCategory] || BOOK_CATEGORIES['Personal Growth'];
-  const query = search
-    ? `(${search}) AND ${categoryQuery} AND ebook_access:public`
-    : `${categoryQuery} AND ebook_access:public`;
 
   const cacheKey = `${selectedCategory}_${search}`.toLowerCase();
   const cached = booksCache.get(cacheKey);
@@ -1017,70 +1375,61 @@ router.get('/library/books', async (req: Request, res: Response) => {
     return res.json(cached.data);
   }
 
-  const params = new URLSearchParams({
-    q: query,
-    fields: [
-      'key',
-      'title',
-      'author_name',
-      'cover_i',
-      'first_publish_year',
-      'ebook_access',
-      'ia',
-      'isbn',
-    ].join(','),
-    limit: '24',
-  });
+  // Get matching curated books immediately
+  const curated = searchCuratedBooks(search, selectedCategory);
 
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+  // If search query is provided and looks specific, optionally try OpenLibrary with a fast 3s timeout
+  if (search && search.length > 3) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
 
-    const response = await fetch(`https://openlibrary.org/search.json?${params.toString()}`, {
-      headers: {
-        'User-Agent': 'WonderTeamStudentApp/1.0 (timilehinoladoja2002@gmail.com)',
-      },
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`OpenLibrary returned ${response.status}`);
-    }
-
-    const json = await response.json();
-    const docs = (json.docs || []).map((doc: any) => ({
-      ...doc,
-      category: selectedCategory,
-    }));
-
-    if (docs.length === 0) {
-      const fallback = getCuratedFallbackBooks(selectedCategory);
-      return res.json({
-        category: selectedCategory,
-        total: fallback.length,
-        books: fallback,
+      const params = new URLSearchParams({
+        q: search,
+        fields: 'key,title,author_name,cover_i,first_publish_year,ebook_access,ia,isbn',
+        limit: '15',
       });
+
+      const response = await fetch(`https://openlibrary.org/search.json?${params.toString()}`, {
+        headers: { 'User-Agent': 'WonderTeamApp/1.0' },
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        const json = await response.json();
+        const docs = (json.docs || []).map((doc: any) => ({
+          ...doc,
+          coverUrl: doc.cover_i ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-M.jpg` : undefined,
+          category: selectedCategory || 'Personal Growth',
+          source: 'openlibrary',
+        }));
+
+        // Merge curated books with external results
+        const existingKeys = new Set(curated.map((b) => b.title.toLowerCase()));
+        const uniqueExternal = docs.filter((d: any) => !existingKeys.has(d.title.toLowerCase()));
+        const combined = [...curated, ...uniqueExternal];
+
+        const result = {
+          category: selectedCategory || 'All',
+          total: combined.length,
+          books: combined,
+        };
+        booksCache.set(cacheKey, { data: result, timestamp: Date.now() });
+        return res.json(result);
+      }
+    } catch {
+      // Ignore openlibrary error and fall back gracefully to curated books
     }
-
-    const result = {
-      category: selectedCategory,
-      total: json.numFound || docs.length,
-      books: docs,
-    };
-
-    booksCache.set(cacheKey, { data: result, timestamp: Date.now() });
-    return res.json(result);
-  } catch (err: any) {
-    console.warn('OpenLibrary fetch failed/timed out, using curated books:', err.message);
-    const fallback = getCuratedFallbackBooks(selectedCategory);
-    return res.json({
-      category: selectedCategory,
-      total: fallback.length,
-      books: fallback,
-      isFallback: true,
-    });
   }
+
+  const result = {
+    category: selectedCategory || 'All',
+    total: curated.length,
+    books: curated,
+  };
+  booksCache.set(cacheKey, { data: result, timestamp: Date.now() });
+  return res.json(result);
 });
 
 // Saved Books / Personal Bookshelf
@@ -1096,7 +1445,7 @@ router.get('/library/saved', async (req: Request, res: Response) => {
 });
 
 router.post('/library/save', async (req: Request, res: Response) => {
-  const { userId, bookKey, title, author, coverId, iaId, category } = req.body;
+  const { userId, bookKey, title, author, coverId, coverUrl, iaId, category } = req.body;
   if (!userId || !bookKey || !title) {
     return res.status(400).json({ error: 'userId, bookKey, and title are required' });
   }
@@ -1118,6 +1467,7 @@ router.post('/library/save', async (req: Request, res: Response) => {
     title,
     author: author || 'Unknown Author',
     coverId,
+    coverUrl: coverUrl || (coverId ? `https://covers.openlibrary.org/b/id/${coverId}-M.jpg` : undefined),
     iaId,
     category: category || 'General',
     progressPercent: 0,
@@ -1437,11 +1787,14 @@ router.get('/library/google-books', async (req: Request, res: Response) => {
     return res.json(cached.data);
   }
 
+  // Pre-fetch matching curated books so we always have guaranteed results
+  const matchingCurated = searchCuratedBooks(query);
+
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 6000);
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-    const apiUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=24&printType=books`;
+    const apiUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=20&printType=books`;
     const response = await fetch(apiUrl, {
       headers: {
         'User-Agent': 'WonderTeamApp/1.0',
@@ -1461,6 +1814,10 @@ router.get('/library/google-books', async (req: Request, res: Response) => {
       const isbnObj = (vol.industryIdentifiers || []).find((id: any) => id.type === 'ISBN_13' || id.type === 'ISBN_10');
       const isbn = isbnObj ? [isbnObj.identifier] : [];
 
+      const rawCover = vol.imageLinks?.thumbnail || vol.imageLinks?.smallThumbnail || '';
+      // Force HTTPS on all Google image links to prevent mixed-content browser blocking
+      const secureCover = rawCover ? rawCover.replace(/^http:\/\//i, 'https://') : '';
+
       return {
         key: `/google/${item.id}`,
         googleBookId: item.id,
@@ -1468,29 +1825,40 @@ router.get('/library/google-books', async (req: Request, res: Response) => {
         author_name: vol.authors || ['Authorized Author'],
         description: vol.description || '',
         cover_i: undefined,
-        coverUrl: vol.imageLinks?.thumbnail || vol.imageLinks?.smallThumbnail || '',
+        coverUrl: secureCover,
         first_publish_year: vol.publishedDate ? parseInt(vol.publishedDate.substring(0, 4), 10) : undefined,
         ebook_access: access.viewability || 'preview',
         embeddable: access.embeddable !== false,
-        previewLink: vol.previewLink,
-        infoLink: vol.infoLink,
+        previewLink: vol.previewLink ? vol.previewLink.replace(/^http:\/\//i, 'https://') : undefined,
+        infoLink: vol.infoLink ? vol.infoLink.replace(/^http:\/\//i, 'https://') : undefined,
         isbn,
         category: query,
         source: 'googlebooks',
       };
     });
 
+    // Merge matching curated books with external Google Books results
+    const existingTitles = new Set(matchingCurated.map((b) => b.title.toLowerCase()));
+    const uniqueGoogle = items.filter((b: any) => !existingTitles.has(b.title.toLowerCase()));
+    const combined = [...matchingCurated, ...uniqueGoogle];
+
     const result = {
-      total: data.totalItems || items.length,
-      books: items,
+      total: combined.length,
+      books: combined,
       query,
     };
 
     googleBooksCache.set(cacheKey, { data: result, timestamp: Date.now() });
     return res.json(result);
   } catch (err: any) {
-    console.warn('Google Books search failed:', err.message);
-    return res.json({ total: 0, books: [], error: err.message });
+    console.warn('Google Books search failed/timed out, returning curated books:', err.message);
+    const result = {
+      total: matchingCurated.length,
+      books: matchingCurated,
+      query,
+      isFallback: true,
+    };
+    return res.json(result);
   }
 });
 

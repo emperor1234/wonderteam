@@ -88,7 +88,7 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
   const fetchTasks = async () => {
     if (!user) return;
     try {
-      const res = await fetch(`/api/tasks?userId=${user.id}&role=member`);
+      const res = await fetch(`/api/tasks?userId=${user.id}`);
       if (res.ok) {
         const data = await res.json();
         setTasks(data);
@@ -124,6 +124,21 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
       fetchAttendanceData();
     } catch (err) {
       console.error('Failed to toggle task:', err);
+      fetchTasks();
+    }
+  };
+
+  const handleDeleteTask = async (taskId: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    try {
+      await fetch('/api/tasks/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId }),
+      });
+      fetchAttendanceData();
+    } catch (err) {
+      console.error('Failed to delete task:', err);
       fetchTasks();
     }
   };
@@ -404,7 +419,11 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
           <div className="space-y-2">
             {tasks.slice(0, 5).map((task) => (
               <div key={task.id} className="relative">
-                <TaskRow task={task} onToggle={handleToggleTask} />
+                <TaskRow
+                  task={task}
+                  onToggle={handleToggleTask}
+                  onDelete={handleDeleteTask}
+                />
                 {task.isIPA && (
                   <div className="absolute right-3 top-3 pointer-events-none">
                     <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[9px] font-bold bg-[#E7F4EE] text-[#0F513B] border border-[#CBD6D1]">

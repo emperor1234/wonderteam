@@ -1,14 +1,15 @@
 import React from 'react';
 import { TaskItem } from '../types/index.ts';
-import { Check, Clock } from 'lucide-react';
+import { Check, Clock, Trash2 } from 'lucide-react';
 
 interface TaskRowProps {
   task: TaskItem;
   onToggle: (taskId: string) => void;
+  onDelete?: (taskId: string) => void;
   showAssignee?: boolean;
 }
 
-export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle, showAssignee = false }) => {
+export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle, onDelete, showAssignee = false }) => {
   const isCompleted = task.status === 'completed';
 
   return (
@@ -44,12 +45,28 @@ export const TaskRow: React.FC<TaskRowProps> = ({ task, onToggle, showAssignee =
             {task.title}
           </p>
 
-          {(task.dueTime || task.dueDate) && (
-            <span className="text-[11px] text-[#89928E] flex items-center gap-1 shrink-0 font-mono-numbers">
-              <Clock className="w-3 h-3 text-[#CBD6D1]" />
-              <span>{task.dueTime || task.dueDate}</span>
-            </span>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {(task.dueTime || task.dueDate) && (
+              <span className="text-[11px] text-[#89928E] flex items-center gap-1 font-mono-numbers">
+                <Clock className="w-3 h-3 text-[#CBD6D1]" />
+                <span>{task.dueTime || task.dueDate}</span>
+              </span>
+            )}
+            {onDelete && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete(task.id);
+                }}
+                className="opacity-0 group-hover:opacity-100 p-1 text-[#89928E] hover:text-[#C84C4C] hover:bg-[#FFF0F0] rounded-[6px] transition-all"
+                title="Delete task"
+                aria-label="Delete task"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
 
         {task.description && (

@@ -5,15 +5,24 @@ import { BookReaderModal } from '../components/BookReaderModal.tsx';
 import { DictionaryModal } from '../components/DictionaryModal.tsx';
 import {
   BookOpen, Search, BookA, Bookmark, BookmarkCheck,
-  CheckCircle2, RefreshCw, Library, BookMarked, X,
+  CheckCircle2, RefreshCw, Library, BookMarked, X, Sparkles, Filter,
 } from 'lucide-react';
 
-const DEFAULT_SEARCH = 'personal development entrepreneurship leadership';
+const CATEGORY_TABS = [
+  'All',
+  'Personal Growth',
+  'Habit Building',
+  'Financial Literacy',
+  'Leadership',
+  'Network Marketing',
+  'Productivity',
+];
 
 export const MemberLibrary: React.FC = () => {
   const { user } = useAuth();
   const [searchInput, setSearchInput] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [books, setBooks] = useState<BookItem[]>([]);
   const [savedBooks, setSavedBooks] = useState<SavedBookRecord[]>([]);
   const [activeTab, setActiveTab] = useState<'catalog' | 'bookshelf'>('catalog');
@@ -23,11 +32,15 @@ export const MemberLibrary: React.FC = () => {
   const [dictionaryWord, setDictionaryWord] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const fetchBooks = useCallback(async (query: string) => {
+  const fetchBooks = useCallback(async (query: string, category: string) => {
     setIsLoading(true);
     try {
-      const q = query.trim() || DEFAULT_SEARCH;
-      const googleRes = await fetch(`/api/library/google-books?q=${encodeURIComponent(q)}`);
+      const params = new URLSearchParams();
+      if (query.trim()) params.set('q', query.trim());
+      if (category && category !== 'All') params.set('category', category);
+
+      // Try Google Books endpoint (which has curated fallback baked in)
+      const googleRes = await fetch(`/api/library/google-books?${params.toString()}`);
       if (googleRes.ok) {
         const data = await googleRes.json();
         if (data.books && data.books.length > 0) {
@@ -36,7 +49,13 @@ export const MemberLibrary: React.FC = () => {
           return;
         }
       }
-      const openRes = await fetch(`/api/library/books?category=Personal+Growth&search=${encodeURIComponent(q)}`);
+
+      // Secondary fallback to /api/library/books
+      const fallbackParams = new URLSearchParams();
+      if (query.trim()) fallbackParams.set('search', query.trim());
+      if (category && category !== 'All') fallbackParams.set('category', category);
+
+      const openRes = await fetch(`/api/library/books?${fallbackParams.toString()}`);
       if (openRes.ok) {
         const data = await openRes.json();
         setBooks(data.books || []);
@@ -58,20 +77,27 @@ export const MemberLibrary: React.FC = () => {
     }
   };
 
-  useEffect(() => { fetchBooks(DEFAULT_SEARCH); }, [fetchBooks]);
-  useEffect(() => { fetchSavedBooks(); }, [user]);
+  useEffect(() => {
+    fetchBooks(searchQuery, selectedCategory);
+  }, [fetchBooks, searchQuery, selectedCategory]);
+
+  useEffect(() => {
+    fetchSavedBooks();
+  }, [user]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const q = searchInput.trim();
     setSearchQuery(q);
-    fetchBooks(q || DEFAULT_SEARCH);
   };
 
   const handleClearSearch = () => {
     setSearchInput('');
     setSearchQuery('');
-    fetchBooks(DEFAULT_SEARCH);
+  };
+
+  const handleSelectCategory = (cat: string) => {
+    setSelectedCategory(cat);
   };
 
   const handleSaveBook = async (book: BookItem) => {
@@ -84,14 +110,15 @@ export const MemberLibrary: React.FC = () => {
           userId: user.id,
           bookKey: book.key,
           title: book.title,
-          author: book.author_name ? book.author_name.join(', ') : 'Unknown',
+          author: book.author_name ? book.author_name.join(', ') : 'Authorized Author',
           coverId: book.cover_i,
+          coverUrl: (book as any).coverUrl,
           iaId: book.ia && book.ia.length > 0 ? book.ia[0] : undefined,
-          category: 'General',
+          category: book.category || 'General',
         }),
       });
       if (res.ok) {
-        setToastMessage(`Saved to bookshelf!`);
+        setToastMessage(`Saved "${book.title}" to bookshelf!`);
         setTimeout(() => setToastMessage(null), 3000);
         fetchSavedBooks();
       }
@@ -101,7 +128,10 @@ export const MemberLibrary: React.FC = () => {
   };
 
   const isBookSaved = (bookKey: string) => savedBooks.some((b) => b.bookKey === bookKey);
-  const openDictionaryWith = (word: string) => { setDictionaryWord(word); setIsDictionaryOpen(true); };
+  const openDictionaryWith = (word: string) => {
+    setDictionaryWord(word);
+    setIsDictionaryOpen(true);
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-5 pb-24">
@@ -112,6 +142,7 @@ export const MemberLibrary: React.FC = () => {
         </div>
       )}
 
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#E2E8E5] pb-4">
         <div>
           <div className="flex items-center gap-2 text-xs font-semibold text-[#146C4E] uppercase tracking-wider mb-1">
@@ -119,7 +150,7 @@ export const MemberLibrary: React.FC = () => {
             <span>Growth Library</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#17211D]">Reading Library</h1>
-          <p className="text-xs text-[#5E6964] mt-0.5">Google Books · Open Library · Dictionary</p>
+          <p className="text-xs text-[#5E6964] mt-0.5">Mindset · Sales & Networking · Wealth · Discipline</p>
         </div>
         <button
           type="button"
@@ -131,17 +162,28 @@ export const MemberLibrary: React.FC = () => {
         </button>
       </div>
 
+      {/* Main Tabs: Browse vs Bookshelf */}
       <div className="flex rounded-[12px] bg-[#F7F9F8] p-1 border border-[#E2E8E5]">
         <button
-          type="button" onClick={() => setActiveTab('catalog')}
-          className={`flex-1 py-2 text-xs font-bold rounded-[8px] transition-all flex items-center justify-center gap-1.5 ${activeTab === 'catalog' ? 'bg-white text-[#17211D] shadow-xs' : 'text-[#5E6964] hover:text-[#17211D]'}`}
+          type="button"
+          onClick={() => setActiveTab('catalog')}
+          className={`flex-1 py-2 text-xs font-bold rounded-[8px] transition-all flex items-center justify-center gap-1.5 ${
+            activeTab === 'catalog'
+              ? 'bg-white text-[#17211D] shadow-xs'
+              : 'text-[#5E6964] hover:text-[#17211D]'
+          }`}
         >
           <BookOpen className="w-4 h-4 text-[#146C4E]" />
-          <span>Browse Library</span>
+          <span>Browse Library ({books.length})</span>
         </button>
         <button
-          type="button" onClick={() => setActiveTab('bookshelf')}
-          className={`flex-1 py-2 text-xs font-bold rounded-[8px] transition-all flex items-center justify-center gap-1.5 ${activeTab === 'bookshelf' ? 'bg-white text-[#17211D] shadow-xs' : 'text-[#5E6964] hover:text-[#17211D]'}`}
+          type="button"
+          onClick={() => setActiveTab('bookshelf')}
+          className={`flex-1 py-2 text-xs font-bold rounded-[8px] transition-all flex items-center justify-center gap-1.5 ${
+            activeTab === 'bookshelf'
+              ? 'bg-white text-[#17211D] shadow-xs'
+              : 'text-[#5E6964] hover:text-[#17211D]'
+          }`}
         >
           <BookMarked className="w-4 h-4 text-[#146C4E]" />
           <span>My Bookshelf ({savedBooks.length})</span>
@@ -150,46 +192,88 @@ export const MemberLibrary: React.FC = () => {
 
       {activeTab === 'catalog' ? (
         <>
+          {/* Search Box */}
           <form onSubmit={handleSearchSubmit} className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-[#89928E]" />
+              <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-[#89928E]" />
               <input
-                type="text" value={searchInput}
+                type="text"
+                value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Search any book, author, or topic..."
-                className="w-full h-11 pl-9 pr-9 bg-white border border-[#CBD6D1] rounded-[10px] text-sm text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E] placeholder:text-[#89928E]"
+                placeholder="Search any title, author, or keyword (Napoleon, Habits, Sales, War...)"
+                className="w-full h-11 pl-10 pr-9 bg-white border border-[#CBD6D1] rounded-[10px] text-sm text-[#17211D] focus:outline-none focus:ring-2 focus:ring-[#E7F4EE] focus:border-[#146C4E] placeholder:text-[#89928E]"
               />
               {searchInput && (
-                <button type="button" onClick={handleClearSearch} className="absolute right-3 top-1/2 -translate-y-1/2 text-[#89928E] hover:text-[#17211D]">
+                <button
+                  type="button"
+                  onClick={handleClearSearch}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-[#89928E] hover:text-[#17211D]"
+                >
                   <X className="w-4 h-4" />
                 </button>
               )}
             </div>
-            <button type="submit" className="px-5 h-11 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[10px] transition-colors whitespace-nowrap">
+            <button
+              type="submit"
+              className="px-5 h-11 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[10px] transition-colors whitespace-nowrap"
+            >
               Search
             </button>
           </form>
 
+          {/* Quick Category Chips */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+            {CATEGORY_TABS.map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                onClick={() => handleSelectCategory(cat)}
+                className={`px-3 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-colors border ${
+                  selectedCategory === cat
+                    ? 'bg-[#146C4E] text-white border-[#146C4E]'
+                    : 'bg-white text-[#5E6964] border-[#CBD6D1] hover:border-[#146C4E] hover:text-[#17211D]'
+                }`}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+
           {searchQuery && (
             <div className="flex items-center gap-2 text-xs text-[#5E6964]">
-              <span>Results for: <strong className="text-[#17211D]">"{searchQuery}"</strong></span>
-              <button type="button" onClick={handleClearSearch} className="text-[#146C4E] hover:underline font-semibold">Clear</button>
+              <span>
+                Results for: <strong className="text-[#17211D]">"{searchQuery}"</strong>
+              </span>
+              <button
+                type="button"
+                onClick={handleClearSearch}
+                className="text-[#146C4E] hover:underline font-semibold"
+              >
+                Clear
+              </button>
             </div>
           )}
 
+          {/* Book Catalog Grid */}
           <div className="bg-white rounded-[18px] border border-[#E2E8E5] p-4 sm:p-5 shadow-xs">
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-[#E2E8E5]">
               <div className="flex items-center gap-2">
                 <BookOpen className="w-4 h-4 text-[#146C4E]" />
                 <h2 className="text-sm font-bold text-[#17211D]">
-                  {searchQuery ? `"${searchQuery}"` : 'Recommended Books'}
+                  {searchQuery ? `"${searchQuery}"` : selectedCategory !== 'All' ? selectedCategory : 'Featured Library'}
                 </h2>
                 {!isLoading && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-[#E7F4EE] text-[#0F513B] font-semibold">{books.length}</span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-[#E7F4EE] text-[#0F513B] font-semibold">
+                    {books.length}
+                  </span>
                 )}
               </div>
-              <button type="button" onClick={() => fetchBooks(searchQuery || DEFAULT_SEARCH)}
-                className="p-1.5 text-[#5E6964] hover:text-[#17211D] rounded-[6px] hover:bg-[#F7F9F8]">
+              <button
+                type="button"
+                onClick={() => fetchBooks(searchQuery, selectedCategory)}
+                className="p-1.5 text-[#5E6964] hover:text-[#17211D] rounded-[6px] hover:bg-[#F7F9F8]"
+                title="Refresh books"
+              >
                 <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
             </div>
@@ -207,48 +291,85 @@ export const MemberLibrary: React.FC = () => {
             ) : books.length === 0 ? (
               <div className="py-12 text-center space-y-3">
                 <BookOpen className="w-10 h-10 text-[#CBD6D1] mx-auto" />
-                <p className="text-xs font-semibold text-[#17211D]">No books found</p>
-                <p className="text-[11px] text-[#5E6964]">Try a different search term.</p>
-                <button type="button" onClick={handleClearSearch}
-                  className="px-3 py-1.5 bg-[#146C4E] text-white text-xs font-semibold rounded-[8px]">Browse Default Books</button>
+                <p className="text-xs font-semibold text-[#17211D]">No books matched your criteria</p>
+                <p className="text-[11px] text-[#5E6964]">Try searching for authors like James Clear or topics like Sales.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleClearSearch();
+                    setSelectedCategory('All');
+                  }}
+                  className="px-4 py-2 bg-[#146C4E] text-white text-xs font-bold rounded-[8px]"
+                >
+                  Browse All Books
+                </button>
               </div>
             ) : (
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
                 {books.map((book) => {
                   const saved = isBookSaved(book.key);
-                  const author = book.author_name ? book.author_name[0] : 'Author';
+                  const author = book.author_name ? book.author_name[0] : 'Authorized Author';
+                  const coverSrc = book.cover_i
+                    ? `https://covers.openlibrary.org/b/id/${book.cover_i}-M.jpg`
+                    : (book as any).coverUrl;
+
                   return (
-                    <div key={book.key}
-                      className="group bg-[#F7F9F8] border border-[#CBD6D1] rounded-[14px] p-2.5 sm:p-3 flex flex-col justify-between hover:shadow-md hover:border-[#146C4E] transition-all">
+                    <div
+                      key={book.key}
+                      className="group bg-[#F7F9F8] border border-[#CBD6D1] rounded-[14px] p-2.5 sm:p-3 flex flex-col justify-between hover:shadow-md hover:border-[#146C4E] transition-all"
+                    >
                       <div>
                         <div className="relative aspect-[3/4] rounded-[8px] overflow-hidden bg-[#E2E8E5] mb-2.5 shadow-2xs">
-                          {book.cover_i ? (
-                            <img src={`https://covers.openlibrary.org/b/id/${book.cover_i}-M.jpg`} alt={book.title}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" loading="lazy" />
-                          ) : (book as any).coverUrl ? (
-                            <img src={(book as any).coverUrl} alt={book.title}
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" loading="lazy" />
+                          {coverSrc ? (
+                            <img
+                              src={coverSrc}
+                              alt={book.title}
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                              loading="lazy"
+                              onError={(e) => {
+                                // Graceful fallback if external image fails
+                                (e.target as HTMLElement).style.display = 'none';
+                              }}
+                            />
                           ) : (
                             <div className="w-full h-full flex flex-col items-center justify-center p-2 text-center bg-gradient-to-b from-[#E7F4EE] to-[#CBD6D1]">
                               <BookOpen className="w-7 h-7 text-[#146C4E] mb-1" />
-                              <span className="text-[10px] font-bold text-[#17211D] line-clamp-2 leading-tight">{book.title}</span>
+                              <span className="text-[10px] font-bold text-[#17211D] line-clamp-2 leading-tight">
+                                {book.title}
+                              </span>
                             </div>
                           )}
                           <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded-[4px] bg-black/60 backdrop-blur-sm text-[9px] font-bold text-white uppercase tracking-wider">
-                            {book.source === 'googlebooks' || book.googleBookId ? 'Google' : 'Public'}
+                            {book.category || (book.source === 'googlebooks' || book.googleBookId ? 'Google' : 'Growth')}
                           </div>
                         </div>
-                        <h3 className="text-[11px] sm:text-xs font-bold text-[#17211D] line-clamp-2 leading-snug group-hover:text-[#146C4E]">{book.title}</h3>
-                        <p className="text-[10px] sm:text-[11px] text-[#5E6964] mt-0.5 truncate">{author}</p>
+                        <h3 className="text-[11px] sm:text-xs font-bold text-[#17211D] line-clamp-2 leading-snug group-hover:text-[#146C4E]">
+                          {book.title}
+                        </h3>
+                        <p className="text-[10px] sm:text-[11px] text-[#5E6964] mt-0.5 truncate">
+                          {author}
+                        </p>
                       </div>
+
                       <div className="mt-2.5 pt-2 border-t border-[#E2E8E5] flex items-center gap-1.5">
-                        <button type="button" onClick={() => setActiveReadingBook(book)}
-                          className="flex-1 py-1.5 bg-[#146C4E] hover:bg-[#0F513B] text-white text-[10px] sm:text-[11px] font-bold rounded-[8px] transition-colors flex items-center justify-center gap-1">
-                          <BookOpen className="w-3 h-3" /><span>Read</span>
+                        <button
+                          type="button"
+                          onClick={() => setActiveReadingBook(book)}
+                          className="flex-1 py-1.5 bg-[#146C4E] hover:bg-[#0F513B] text-white text-[10px] sm:text-[11px] font-bold rounded-[8px] transition-colors flex items-center justify-center gap-1"
+                        >
+                          <BookOpen className="w-3 h-3" />
+                          <span>Read</span>
                         </button>
-                        <button type="button" onClick={() => handleSaveBook(book)}
-                          className={`p-1.5 rounded-[8px] border transition-colors ${saved ? 'bg-[#E7F4EE] border-[#146C4E] text-[#146C4E]' : 'bg-white border-[#CBD6D1] text-[#5E6964] hover:bg-[#F7F9F8]'}`}
-                          title={saved ? 'Saved' : 'Save'}>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveBook(book)}
+                          className={`p-1.5 rounded-[8px] border transition-colors ${
+                            saved
+                              ? 'bg-[#E7F4EE] border-[#146C4E] text-[#146C4E]'
+                              : 'bg-white border-[#CBD6D1] text-[#5E6964] hover:bg-[#F7F9F8]'
+                          }`}
+                          title={saved ? 'Saved to Bookshelf' : 'Save to Bookshelf'}
+                        >
                           {saved ? <BookmarkCheck className="w-3.5 h-3.5" /> : <Bookmark className="w-3.5 h-3.5" />}
                         </button>
                       </div>
@@ -260,6 +381,7 @@ export const MemberLibrary: React.FC = () => {
           </div>
         </>
       ) : (
+        /* Bookshelf Tab */
         <div className="bg-white rounded-[18px] border border-[#E2E8E5] p-5 shadow-xs space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-[#E2E8E5]">
             <div className="flex items-center gap-2">
@@ -268,54 +390,93 @@ export const MemberLibrary: React.FC = () => {
             </div>
             <span className="text-xs font-semibold text-[#5E6964]">{savedBooks.length} Books</span>
           </div>
+
           {savedBooks.length === 0 ? (
             <div className="py-12 text-center space-y-3">
               <Bookmark className="w-10 h-10 text-[#CBD6D1] mx-auto" />
               <p className="text-xs font-semibold text-[#17211D]">Your bookshelf is empty</p>
               <p className="text-[11px] text-[#5E6964]">Search and save books to build your reading list.</p>
-              <button type="button" onClick={() => setActiveTab('catalog')}
-                className="px-4 py-2 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[8px] transition-colors">Browse Books</button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('catalog')}
+                className="px-4 py-2 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[8px] transition-colors"
+              >
+                Browse Books
+              </button>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {savedBooks.map((item) => (
-                <div key={item.id} className="bg-[#F7F9F8] border border-[#CBD6D1] rounded-[12px] p-3 flex flex-col justify-between">
-                  <div className="flex items-start gap-3">
-                    {item.coverId ? (
-                      <img src={`https://covers.openlibrary.org/b/id/${item.coverId}-S.jpg`} alt=""
-                        className="w-10 h-14 object-cover rounded-[4px] border shrink-0" />
-                    ) : (
-                      <div className="w-10 h-14 bg-[#CBD6D1] rounded-[4px] flex items-center justify-center text-[10px] font-bold text-white shrink-0">BK</div>
-                    )}
-                    <div className="truncate flex-1">
-                      <h4 className="text-xs font-bold text-[#17211D] truncate leading-tight">{item.title}</h4>
-                      <p className="text-[11px] text-[#5E6964] truncate mt-0.5">{item.author}</p>
+              {savedBooks.map((item) => {
+                const coverSrc = item.coverUrl || (item.coverId ? `https://covers.openlibrary.org/b/id/${item.coverId}-M.jpg` : null);
+
+                return (
+                  <div
+                    key={item.id}
+                    className="bg-[#F7F9F8] border border-[#CBD6D1] rounded-[12px] p-3 flex flex-col justify-between"
+                  >
+                    <div className="flex items-start gap-3">
+                      {coverSrc ? (
+                        <img
+                          src={coverSrc}
+                          alt=""
+                          className="w-10 h-14 object-cover rounded-[4px] border shrink-0"
+                        />
+                      ) : (
+                        <div className="w-10 h-14 bg-[#CBD6D1] rounded-[4px] flex items-center justify-center text-[10px] font-bold text-white shrink-0">
+                          BK
+                        </div>
+                      )}
+                      <div className="truncate flex-1">
+                        <h4 className="text-xs font-bold text-[#17211D] truncate leading-tight">{item.title}</h4>
+                        <p className="text-[11px] text-[#5E6964] truncate mt-0.5">{item.author}</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 pt-2 border-t border-[#E2E8E5]">
+                      <div className="flex items-center justify-between text-[11px] text-[#5E6964] mb-1.5">
+                        <span>Progress</span>
+                        <strong className="text-[#146C4E]">{item.progressPercent}%</strong>
+                      </div>
+                      <div className="w-full bg-[#E2E8E5] h-1.5 rounded-full overflow-hidden mb-2.5">
+                        <div style={{ width: `${item.progressPercent}%` }} className="bg-[#146C4E] h-full" />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setActiveReadingBook({
+                            key: item.bookKey,
+                            title: item.title,
+                            author_name: [item.author],
+                            cover_i: item.coverId,
+                            coverUrl: item.coverUrl,
+                            ia: item.iaId ? [item.iaId] : undefined,
+                          })
+                        }
+                        className="w-full py-1.5 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[8px] transition-colors flex items-center justify-center gap-1"
+                      >
+                        <BookOpen className="w-3 h-3" />
+                        <span>Continue Reading</span>
+                      </button>
                     </div>
                   </div>
-                  <div className="mt-3 pt-2 border-t border-[#E2E8E5]">
-                    <div className="flex items-center justify-between text-[11px] text-[#5E6964] mb-1.5">
-                      <span>Progress</span>
-                      <strong className="text-[#146C4E]">{item.progressPercent}%</strong>
-                    </div>
-                    <div className="w-full bg-[#E2E8E5] h-1.5 rounded-full overflow-hidden mb-2.5">
-                      <div style={{ width: `${item.progressPercent}%` }} className="bg-[#146C4E] h-full" />
-                    </div>
-                    <button type="button"
-                      onClick={() => setActiveReadingBook({ key: item.bookKey, title: item.title, author_name: [item.author], cover_i: item.coverId, ia: item.iaId ? [item.iaId] : undefined })}
-                      className="w-full py-1.5 bg-[#146C4E] hover:bg-[#0F513B] text-white text-xs font-bold rounded-[8px] transition-colors flex items-center justify-center gap-1">
-                      <BookOpen className="w-3 h-3" /><span>Continue Reading</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
       )}
 
-      <BookReaderModal isOpen={Boolean(activeReadingBook)} onClose={() => setActiveReadingBook(null)}
-        book={activeReadingBook} onOpenDictionaryWithWord={openDictionaryWith} onSaveToBookshelf={handleSaveBook} />
-      <DictionaryModal isOpen={isDictionaryOpen} onClose={() => setIsDictionaryOpen(false)} initialWord={dictionaryWord} />
+      <BookReaderModal
+        isOpen={Boolean(activeReadingBook)}
+        onClose={() => setActiveReadingBook(null)}
+        book={activeReadingBook}
+        onOpenDictionaryWithWord={openDictionaryWith}
+        onSaveToBookshelf={handleSaveBook}
+      />
+      <DictionaryModal
+        isOpen={isDictionaryOpen}
+        onClose={() => setIsDictionaryOpen(false)}
+        initialWord={dictionaryWord}
+      />
     </div>
   );
 };
