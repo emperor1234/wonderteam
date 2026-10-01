@@ -189,20 +189,18 @@ export function purgeDemoData(db: DatabaseState): boolean {
   );
 
   const hadDemoUsers = db.users.length !== beforeLen;
+  // Only purge records that belong to seeded DEMO users. Filtering by the
+  // record ID prefix is intentionally avoided: every real record shares the
+  // same `att_`/`task_`/`sp_` prefix, so a prefix filter would wipe production
+  // data on every getDb() call. Demo users are identified solely by their seed IDs.
   const beforeAtt = db.attendance.length;
-  db.attendance = db.attendance.filter(
-    (a) => !demoIds.includes(a.userId) && !a.id.startsWith('att_')
-  );
+  db.attendance = db.attendance.filter((a) => !demoIds.includes(a.userId));
 
   const beforeTasks = db.tasks.length;
-  db.tasks = db.tasks.filter(
-    (t) => !demoIds.includes(t.assigneeId) && !t.id.startsWith('task_')
-  );
+  db.tasks = db.tasks.filter((t) => !demoIds.includes(t.assigneeId));
 
   const beforeSpend = db.spending.length;
-  db.spending = db.spending.filter(
-    (s) => !demoIds.includes(s.userId) && !s.id.startsWith('sp_')
-  );
+  db.spending = db.spending.filter((s) => !demoIds.includes(s.userId));
 
   const beforeBudgets = db.budgets.length;
   db.budgets = db.budgets.filter((b) => !demoIds.includes(b.userId));

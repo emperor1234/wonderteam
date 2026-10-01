@@ -63,17 +63,11 @@ function purgeDemoData(db) {
   );
   const hadDemoUsers = db.users.length !== beforeLen;
   const beforeAtt = db.attendance.length;
-  db.attendance = db.attendance.filter(
-    (a) => !demoIds.includes(a.userId) && !a.id.startsWith("att_")
-  );
+  db.attendance = db.attendance.filter((a) => !demoIds.includes(a.userId));
   const beforeTasks = db.tasks.length;
-  db.tasks = db.tasks.filter(
-    (t) => !demoIds.includes(t.assigneeId) && !t.id.startsWith("task_")
-  );
+  db.tasks = db.tasks.filter((t) => !demoIds.includes(t.assigneeId));
   const beforeSpend = db.spending.length;
-  db.spending = db.spending.filter(
-    (s) => !demoIds.includes(s.userId) && !s.id.startsWith("sp_")
-  );
+  db.spending = db.spending.filter((s) => !demoIds.includes(s.userId));
   const beforeBudgets = db.budgets.length;
   db.budgets = db.budgets.filter((b) => !demoIds.includes(b.userId));
   return hadDemoUsers || db.attendance.length !== beforeAtt || db.tasks.length !== beforeTasks || db.spending.length !== beforeSpend || db.budgets.length !== beforeBudgets;
@@ -306,16 +300,6 @@ var ai = new GoogleGenAI({
     }
   }
 });
-function formatTime12(date) {
-  let hours = date.getHours();
-  const minutes = date.getMinutes();
-  const ampm = hours >= 12 ? "PM" : "AM";
-  hours = hours % 12;
-  hours = hours ? hours : 12;
-  const strHours = hours < 10 ? "0" + hours : "" + hours;
-  const strMinutes = minutes < 10 ? "0" + minutes : "" + minutes;
-  return `${strHours}:${strMinutes} ${ampm}`;
-}
 function getGMT1Info(d = /* @__PURE__ */ new Date(), simulatedTime) {
   if (simulatedTime && typeof simulatedTime.hour === "number") {
     const h2 = simulatedTime.hour;
@@ -737,7 +721,7 @@ router.post("/attendance/clock-out", async (req, res) => {
     return res.status(400).json({ error: "No active clock-in session found for today" });
   }
   const now = /* @__PURE__ */ new Date();
-  const clockOutTimeStr = formatTime12(now);
+  const clockOutTimeStr = getGMT1Info(now).timeStr;
   const totalMinutes = Math.max(1, Math.floor((now.getTime() - record.clockInTimestamp) / 6e4));
   record.clockOut = clockOutTimeStr;
   record.clockOutTimestamp = now.getTime();
@@ -1759,73 +1743,79 @@ router.get("/dictionary/:word", async (req, res) => {
 });
 var googleBooksCache = /* @__PURE__ */ new Map();
 router.get("/library/google-books", async (req, res) => {
-  const query = req.query.q?.trim() || req.query.category?.trim() || "leadership";
-  const cacheKey = query.toLowerCase();
+  const q = req.query.q?.trim() || "";
+  const category = req.query.category?.trim() || "All";
+  const matchingCurated = searchCuratedBooks(q || void 0, category);
+  const cacheKey = `${category}::${q}`.toLowerCase();
   const cached = googleBooksCache.get(cacheKey);
   if (cached && Date.now() - cached.timestamp < 36e5 * 2) {
     return res.json(cached.data);
   }
-  const matchingCurated = searchCuratedBooks(query);
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4e3);
-    const apiUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(query)}&maxResults=20&printType=books`;
-    const response = await fetch(apiUrl, {
-      headers: {
-        "User-Agent": "WonderTeamApp/1.0"
-      },
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-    if (!response.ok) {
-      throw new Error(`Google Books API returned ${response.status}`);
-    }
-    const data = await response.json();
-    const items = (data.items || []).map((item) => {
-      const vol = item.volumeInfo || {};
-      const access = item.accessInfo || {};
-      const isbnObj = (vol.industryIdentifiers || []).find((id) => id.type === "ISBN_13" || id.type === "ISBN_10");
-      const isbn = isbnObj ? [isbnObj.identifier] : [];
-      const rawCover = vol.imageLinks?.thumbnail || vol.imageLinks?.smallThumbnail || "";
-      const secureCover = rawCover ? rawCover.replace(/^http:\/\//i, "https://") : "";
-      return {
-        key: `/google/${item.id}`,
-        googleBookId: item.id,
-        title: vol.title || "Untitled Book",
-        author_name: vol.authors || ["Authorized Author"],
-        description: vol.description || "",
-        cover_i: void 0,
-        coverUrl: secureCover,
-        first_publish_year: vol.publishedDate ? parseInt(vol.publishedDate.substring(0, 4), 10) : void 0,
-        ebook_access: access.viewability || "preview",
-        embeddable: access.embeddable !== false,
-        previewLink: vol.previewLink ? vol.previewLink.replace(/^http:\/\//i, "https://") : void 0,
-        infoLink: vol.infoLink ? vol.infoLink.replace(/^http:\/\//i, "https://") : void 0,
-        isbn,
-        category: query,
-        source: "googlebooks"
+  if (q && q.length > 0) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4e3);
+      const apiUrl = `https://www.googleapis.com/books/v1/volumes?q=${encodeURIComponent(q)}&maxResults=20&printType=books`;
+      const response = await fetch(apiUrl, {
+        headers: {
+          "User-Agent": "WonderTeamApp/1.0"
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error(`Google Books API returned ${response.status}`);
+      }
+      const data = await response.json();
+      const items = (data.items || []).map((item) => {
+        const vol = item.volumeInfo || {};
+        const access = item.accessInfo || {};
+        const isbnObj = (vol.industryIdentifiers || []).find((id) => id.type === "ISBN_13" || id.type === "ISBN_10");
+        const isbn = isbnObj ? [isbnObj.identifier] : [];
+        const rawCover = vol.imageLinks?.thumbnail || vol.imageLinks?.smallThumbnail || "";
+        const secureCover = rawCover ? rawCover.replace(/^http:\/\//i, "https://") : "";
+        return {
+          key: `/google/${item.id}`,
+          googleBookId: item.id,
+          title: vol.title || "Untitled Book",
+          author_name: vol.authors || ["Authorized Author"],
+          description: vol.description || "",
+          cover_i: void 0,
+          coverUrl: secureCover,
+          first_publish_year: vol.publishedDate ? parseInt(vol.publishedDate.substring(0, 4), 10) : void 0,
+          ebook_access: access.viewability || "preview",
+          embeddable: access.embeddable !== false,
+          previewLink: vol.previewLink ? vol.previewLink.replace(/^http:\/\//i, "https://") : void 0,
+          infoLink: vol.infoLink ? vol.infoLink.replace(/^http:\/\//i, "https://") : void 0,
+          isbn,
+          category: category !== "All" ? category : "General",
+          source: "googlebooks"
+        };
+      });
+      const existingTitles = new Set(matchingCurated.map((b) => b.title.toLowerCase()));
+      const uniqueGoogle = items.filter((b) => !existingTitles.has(b.title.toLowerCase()));
+      const combined = [...matchingCurated, ...uniqueGoogle];
+      const result2 = {
+        total: combined.length,
+        books: combined,
+        query: q,
+        category
       };
-    });
-    const existingTitles = new Set(matchingCurated.map((b) => b.title.toLowerCase()));
-    const uniqueGoogle = items.filter((b) => !existingTitles.has(b.title.toLowerCase()));
-    const combined = [...matchingCurated, ...uniqueGoogle];
-    const result = {
-      total: combined.length,
-      books: combined,
-      query
-    };
-    googleBooksCache.set(cacheKey, { data: result, timestamp: Date.now() });
-    return res.json(result);
-  } catch (err) {
-    console.warn("Google Books search failed/timed out, returning curated books:", err.message);
-    const result = {
-      total: matchingCurated.length,
-      books: matchingCurated,
-      query,
-      isFallback: true
-    };
-    return res.json(result);
+      googleBooksCache.set(cacheKey, { data: result2, timestamp: Date.now() });
+      return res.json(result2);
+    } catch (err) {
+      console.warn("Google Books search failed/timed out, returning curated books:", err.message);
+    }
   }
+  const result = {
+    total: matchingCurated.length,
+    books: matchingCurated,
+    query: q,
+    category,
+    isFallback: true
+  };
+  googleBooksCache.set(cacheKey, { data: result, timestamp: Date.now() });
+  return res.json(result);
 });
 router.get("/library/google-volume/:id", async (req, res) => {
   const volumeId = req.params.id;

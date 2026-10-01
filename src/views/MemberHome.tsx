@@ -149,14 +149,12 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
     try {
       // Default to office coordinates or current location
       const office = user.officeLocation || { lat: 6.5244, lng: 3.3792 };
-      const res = await fetch('/api/attendance/clockin', {
+      const res = await fetch('/api/attendance/clock-in', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: user.id,
-          userName: user.name,
-          userAvatar: user.profileImage,
-          location: {
+          clientLocation: {
             lat: office.lat,
             lng: office.lng,
           },
@@ -178,7 +176,7 @@ export const MemberHome: React.FC<MemberHomeProps> = ({
     if (!user || isClockingIn) return;
     setIsClockingIn(true);
     try {
-      const res = await fetch('/api/attendance/clockout', {
+      const res = await fetch('/api/attendance/clock-out', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: user.id }),
