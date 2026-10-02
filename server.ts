@@ -1,4 +1,5 @@
 import express from 'express';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import apiRouter from './server/routes.ts';
@@ -14,14 +15,16 @@ async function startServer() {
   // JSON parser with sufficient limit for base64 under 10KB
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  app.use(cookieParser());
 
-  // Mount API endpoints
-  app.use('/api', apiRouter);
-
-  // Health check
+  // Health check. Registered before the API router so the session guard in the
+  // router cannot intercept it, and uptime monitors need no credentials.
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
   });
+
+  // Mount API endpoints
+  app.use('/api', apiRouter);
 
   const isProduction = process.env.NODE_ENV === 'production';
 

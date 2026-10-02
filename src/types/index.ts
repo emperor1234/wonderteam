@@ -210,3 +210,61 @@ export interface SavedBookRecord {
   notes?: string;
   lastReadDate: string;
 }
+
+// -------------------------------------------------------------
+// NOTIFICATIONS & WEB PUSH
+// -------------------------------------------------------------
+
+export type NotificationType =
+  | 'message'
+  | 'motivation'
+  | 'todo'
+  | 'budget'
+  | 'attendance'
+  | 'reading'
+  | 'system';
+
+export interface AppNotification {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  link?: string;
+  icon?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  read?: boolean;
+  readBy?: string[];
+  meta?: Record<string, any>;
+}
+
+export interface NotificationPreferences {
+  userId: string;
+  enabled: boolean;
+  messages: boolean;
+  motivation: boolean;
+  todos: boolean;
+  budget: boolean;
+  attendance: boolean;
+  reading: boolean;
+  quietHoursStart: number | null;
+  quietHoursEnd: number | null;
+}
+
+export interface ReminderDraft {
+  id: string;
+  title: string;
+  body: string;
+  type: NotificationType;
+  link?: string;
+  createdAt?: string;
+}
+
+export interface PushStatus {
+  subscribed: boolean;
+  deviceCount: number;
+  teamDeviceCount: number;
+  preferences: NotificationPreferences;
+}

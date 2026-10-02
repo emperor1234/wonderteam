@@ -1,6 +1,7 @@
 import React from 'react';
-import { LayoutDashboard, Clock, BookOpen, CheckSquare, Users, Trophy, ShieldAlert } from 'lucide-react';
+import { LayoutDashboard, Clock, BookOpen, CheckSquare, Users, Trophy, ShieldAlert, MessageCircle } from 'lucide-react';
 import { useAuth } from '../context/AuthContext.tsx';
+import { useChat } from '../context/ChatContext.tsx';
 
 interface AdminSidebarProps {
   currentTab: string;
@@ -9,14 +10,18 @@ interface AdminSidebarProps {
 
 export const AdminSidebar: React.FC<AdminSidebarProps> = ({ currentTab, onSelectTab }) => {
   const { user } = useAuth();
+  const { enabled, totalUnread } = useChat();
 
   const navItems = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { id: 'attendance', label: 'Attendance', icon: Clock },
-    { id: 'leaderboard', label: 'Team Leaderboard', icon: Trophy },
-    { id: 'library', label: 'Growth Library', icon: BookOpen },
-    { id: 'tasks', label: 'Operations & Tasks', icon: CheckSquare },
-    { id: 'team', label: 'Team Directory', icon: Users },
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard, badge: 0 },
+    { id: 'attendance', label: 'Attendance', icon: Clock, badge: 0 },
+    { id: 'leaderboard', label: 'Team Leaderboard', icon: Trophy, badge: 0 },
+    { id: 'library', label: 'Growth Library', icon: BookOpen, badge: 0 },
+    { id: 'tasks', label: 'Operations & Tasks', icon: CheckSquare, badge: 0 },
+    { id: 'team', label: 'Team Directory', icon: Users, badge: 0 },
+    ...(enabled
+      ? [{ id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread }]
+      : []),
   ];
 
   return (
@@ -46,7 +51,12 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({ currentTab, onSelect
               }`}
             >
               <Icon className={`w-4 h-4 stroke-[2] ${isActive ? 'text-[#0F513B]' : 'text-[#89928E]'}`} />
-              <span>{item.label}</span>
+              <span className="flex-1">{item.label}</span>
+              {item.badge > 0 && (
+                <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#C84C4C] text-white text-[10px] font-bold flex items-center justify-center">
+                  {item.badge > 9 ? '9+' : item.badge}
+                </span>
+              )}
             </button>
           );
         })}

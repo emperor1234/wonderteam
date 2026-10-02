@@ -3,8 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
+import { ChatProvider, useChat } from './context/ChatContext.tsx';
+import { NotificationProvider, useNotifications } from './context/NotificationContext.tsx';
 import { Navbar } from './components/Navbar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { AdminSidebar } from './components/AdminSidebar.tsx';
@@ -25,17 +27,60 @@ import { AdminLeaderboard } from './views/AdminLeaderboard.tsx';
 import { AdminTasks } from './views/AdminTasks.tsx';
 import { AdminTeam } from './views/AdminTeam.tsx';
 
+// Chat
+import { ChatThreadList } from './views/ChatThreadList.tsx';
+import { ChatThread } from './views/ChatThread.tsx';
+
 function MainAppShell() {
   const { user, isLoading } = useAuth();
+  const { enabled: chatEnabled, openThread, closeThread, activeThreadId } = useChat();
+  const { lastLink, clearLink } = useNotifications();
   const isAdmin = user?.role === 'admin';
 
   // Navigation tab states
-  // Member tabs: 'home' | 'tasks' | 'spending' | 'profile' | 'landing'
-  // Admin tabs: 'overview' | 'attendance' | 'leaderboard' | 'library' | 'tasks' | 'team'
+  // Member tabs: 'home' | 'tasks' | 'spending' | 'profile' | 'messages' | 'landing'
+  // Admin tabs: 'overview' | 'attendance' | 'leaderboard' | 'library' | 'tasks' | 'team' | 'messages'
   const [memberTab, setMemberTab] = useState<string>('home');
   const [adminTab, setAdminTab] = useState<string>('overview');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+
+  const selectTab = useCallback(
+    (tab: string) => {
+      if (isAdmin) setAdminTab(tab);
+      else setMemberTab(tab);
+    },
+    [isAdmin]
+  );
+
+  // A clicked push notification asks the service worker to route the app to the
+  // view the reminder came from.
+  useEffect(() => {
+    if (!lastLink) return;
+    if (lastLink === 'messages' && !chatEnabled) {
+      clearLink();
+      return;
+    }
+    selectTab(lastLink);
+    clearLink();
+  }, [lastLink, chatEnabled, selectTab, clearLink]);
+
+  // Deep link for the case where the app had to be opened by the notification.
+  useEffect(() => {
+    const view = new URLSearchParams(window.location.search).get('view');
+    if (!view) return;
+    selectTab(view);
+    window.history.replaceState({}, '', window.location.pathname);
+  }, [selectTab]);
+
+  // An open conversation takes over the whole screen, the way a messaging app
+  // does, so the thread is not squeezed between the header and the tab bar.
+  useEffect(() => {
+    document.body.style.overflow = activeThreadId ? 'hidden' : '';
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [activeThreadId]);
 
   // Capture PWA prompt
   useEffect(() => {
@@ -106,10 +151,7 @@ function MainAppShell() {
       <Navbar
         onOpenAuth={() => setIsAuthModalOpen(true)}
         currentTab={isAdmin ? adminTab : memberTab}
-        onSelectTab={(tab) => {
-          if (isAdmin) setAdminTab(tab);
-          else setMemberTab(tab);
-        }}
+        onSelectTab={selectTab}
         isAdmin={isAdmin}
       />
 
@@ -137,6 +179,7 @@ function MainAppShell() {
               {adminTab === 'library' && <MemberLibrary />}
               {adminTab === 'tasks' && <AdminTasks />}
               {adminTab === 'team' && <AdminTeam />}
+              {adminTab === 'messages' && <ChatThreadList onOpenThread={openThread} />}
             </div>
           ) : (
             // MEMBER SCREENS
@@ -154,6 +197,7 @@ function MainAppShell() {
               {memberTab === 'profile' && (
                 <ProfileView onOpenAuth={() => setIsAuthModalOpen(true)} />
               )}
+              {memberTab === 'messages' && <ChatThreadList onOpenThread={openThread} />}
             </div>
           )}
         </main>
@@ -162,11 +206,13 @@ function MainAppShell() {
       {/* Mobile Bottom Navigation */}
       <BottomNav
         currentTab={isAdmin ? adminTab : memberTab}
-        onSelectTab={(tab) => {
-          if (isAdmin) setAdminTab(tab);
-          else setMemberTab(tab);
-        }}
+        onSelectTab={selectTab}
       />
+
+      {/* Full-screen conversation, shown above the app shell. The key remounts it
+          per thread so a new conversation opens scrolled to the bottom instead of
+          inheriting the previous thread's scroll position. */}
+      {activeThreadId && <ChatThread key={activeThreadId} onBack={closeThread} />}
 
       {/* Authentication Modal with Sponsor, Director, World Team Leader & Image */}
       <AuthModal
@@ -180,7 +226,11 @@ function MainAppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <MainAppShell />
+      <NotificationProvider>
+        <ChatProvider>
+          <MainAppShell />
+        </ChatProvider>
+      </NotificationProvider>
     </AuthProvider>
   );
 }

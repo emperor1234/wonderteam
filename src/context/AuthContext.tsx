@@ -1,11 +1,12 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User, UserRole, OfficeLocation } from '../types/index.ts';
 
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  availableUsers: User[];
   isOffline: boolean;
+  /** True when a request was rejected because the session expired or was revoked. */
+  sessionExpired: boolean;
   login: (email: string, password?: string) => Promise<void>;
   register: (payload: {
     name: string;
@@ -18,18 +19,20 @@ interface AuthContextType {
     profileImage: string;
     officeLocation: OfficeLocation;
   }) => Promise<void>;
-  switchUser: (userId: string) => Promise<void>;
   updateProfile: (data: Partial<User>) => Promise<void>;
-  logout: () => void;
-  refreshUsers: () => Promise<void>;
+  logout: () => Promise<void>;
+  refreshSession: () => Promise<User | null>;
+  /** The team's roster. Only the team leader's session can retrieve it. */
+  teamRoster: User[];
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+  const [teamRoster, setTeamRoster] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [sessionExpired, setSessionExpired] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
 
   useEffect(() => {
@@ -45,48 +48,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const refreshUsers = async () => {
+  // The roster endpoint is leader-only, so a member's 403 is expected and silent.
+  const loadRoster = useCallback(async (session: User | null) => {
+    if (!session || session.role !== 'admin') {
+      setTeamRoster([]);
+      return;
+    }
     try {
       const res = await fetch('/api/auth/users');
       if (res.ok) {
-        const data = await res.json();
-        setAvailableUsers(data);
-        return data;
+        setTeamRoster(await res.json());
+      } else {
+        setTeamRoster([]);
       }
-    } catch (err) {
-      console.error('Failed to fetch available users:', err);
+    } catch {
+      setTeamRoster([]);
     }
-    return [];
-  };
+  }, []);
+
+  const refreshSession = useCallback(async (): Promise<User | null> => {
+    try {
+      const res = await fetch('/api/auth/session');
+      if (res.ok) {
+        const data = await res.json();
+        setUser(data.user);
+        setSessionExpired(false);
+        void loadRoster(data.user);
+        return data.user as User;
+      }
+      if (res.status === 401) {
+        setUser(null);
+        setSessionExpired(true);
+        setTeamRoster([]);
+      }
+      return null;
+    } catch {
+      // Network failure: keep whatever we already had rather than signing out.
+      return null;
+    }
+  }, [loadRoster]);
 
   useEffect(() => {
-    async function init() {
+    let cancelled = false;
+    (async () => {
       setIsLoading(true);
-      try {
-        const users = await refreshUsers();
-        // Check local storage for stored user id
-        const storedUserId = localStorage.getItem('wonderteam_user_id') || localStorage.getItem('greenline_user_id');
-        if (storedUserId && users.length > 0) {
-          const found = users.find((u: User) => u.id === storedUserId);
-          if (found) {
-            setUser(found);
-            localStorage.setItem('wonderteam_user_id', found.id);
-          } else {
-            localStorage.removeItem('wonderteam_user_id');
-            localStorage.removeItem('greenline_user_id');
-            setUser(null);
-          }
-        } else {
-          setUser(null);
-        }
-      } catch (err) {
-        console.error('Initialization error in AuthProvider:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    init();
-  }, []);
+      await refreshSession();
+      if (!cancelled) setIsLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshSession]);
 
   const login = async (email: string, password?: string) => {
     const res = await fetch('/api/auth/login', {
@@ -109,8 +121,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: authedUser } = await res.json();
     setUser(authedUser);
-    localStorage.setItem('wonderteam_user_id', authedUser.id);
-    await refreshUsers();
+    setSessionExpired(false);
+    void loadRoster(authedUser);
   };
 
   const register = async (payload: {
@@ -147,16 +159,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: newUser } = await res.json();
     setUser(newUser);
-    localStorage.setItem('wonderteam_user_id', newUser.id);
-    await refreshUsers();
-  };
-
-  const switchUser = async (userId: string) => {
-    const target = availableUsers.find((u) => u.id === userId);
-    if (target) {
-      setUser(target);
-      localStorage.setItem('wonderteam_user_id', target.id);
-    }
+    setSessionExpired(false);
+    void loadRoster(newUser);
   };
 
   const updateProfile = async (data: Partial<User>) => {
@@ -181,14 +185,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { user: updated } = await res.json();
     setUser(updated);
-    localStorage.setItem('wonderteam_user_id', updated.id);
-    await refreshUsers();
+    void loadRoster(updated);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Even if the call fails, drop local state; the cookie expires regardless.
+    }
     setUser(null);
-    localStorage.removeItem('wonderteam_user_id');
-    localStorage.removeItem('greenline_user_id');
+    setTeamRoster([]);
+    setSessionExpired(false);
   };
 
   return (
@@ -196,14 +204,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       value={{
         user,
         isLoading,
-        availableUsers,
+        teamRoster,
         isOffline,
+        sessionExpired,
         login,
         register,
-        switchUser,
         updateProfile,
         logout,
-        refreshUsers,
+        refreshSession,
       }}
     >
       {children}

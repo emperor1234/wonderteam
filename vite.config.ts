@@ -18,5 +18,9 @@ export default defineConfig(() => {
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
+    // The sqlite-wasm build ships a .wasm asset that the dev pre-bundler mangles.
+    optimizeDeps: {
+      exclude: ['@sqlite.org/sqlite-wasm'],
+    },
   };
 });

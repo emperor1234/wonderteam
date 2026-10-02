@@ -49,8 +49,11 @@ const args = [
   '--target=node20',
   '--outfile=api/index.js',
   '--external:express',
+  '--external:cookie-parser',
   '--external:@google/genai',
   '--external:@neondatabase/serverless',
+  '--external:@tursodatabase/serverless',
+  '--external:web-push',
 ];
 
 execFileSync(esbuildBin, args, { cwd: rootDir, stdio: 'inherit' });

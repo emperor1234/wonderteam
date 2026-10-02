@@ -1,8 +1,9 @@
 // api-src/index.ts
 import express from "express";
+import cookieParser from "cookie-parser";
 
 // server/routes.ts
-import { Router } from "express";
+import { Router as Router2 } from "express";
 import { GoogleGenAI } from "@google/genai";
 
 // server/db.ts
@@ -45,7 +46,24 @@ function buildProductionInitialData() {
     tasks: [],
     spending: [],
     budgets: [],
-    savedBooks: []
+    savedBooks: [],
+    pushSubscriptions: [],
+    notifications: [],
+    notificationPreferences: []
+  };
+}
+function getDefaultNotificationPreferences(userId) {
+  return {
+    userId,
+    enabled: true,
+    messages: true,
+    motivation: true,
+    todos: true,
+    budget: true,
+    attendance: true,
+    reading: true,
+    quietHoursStart: 22,
+    quietHoursEnd: 6
   };
 }
 function purgeDemoData(db) {
@@ -70,7 +88,13 @@ function purgeDemoData(db) {
   db.spending = db.spending.filter((s) => !demoIds.includes(s.userId));
   const beforeBudgets = db.budgets.length;
   db.budgets = db.budgets.filter((b) => !demoIds.includes(b.userId));
-  return hadDemoUsers || db.attendance.length !== beforeAtt || db.tasks.length !== beforeTasks || db.spending.length !== beforeSpend || db.budgets.length !== beforeBudgets;
+  const beforeSubs = (db.pushSubscriptions || []).length;
+  db.pushSubscriptions = (db.pushSubscriptions || []).filter((s) => !demoIds.includes(s.userId));
+  const beforeNotifications = (db.notifications || []).length;
+  db.notifications = (db.notifications || []).filter(
+    (n) => !demoIds.includes(n.userId) && !n.readBy?.some((r) => demoIds.includes(r))
+  );
+  return hadDemoUsers || db.attendance.length !== beforeAtt || db.tasks.length !== beforeTasks || db.spending.length !== beforeSpend || db.budgets.length !== beforeBudgets || db.pushSubscriptions.length !== beforeSubs || db.notifications.length !== beforeNotifications;
 }
 var inMemoryDb = null;
 var neonTableInitialized = false;
@@ -290,8 +314,1209 @@ async function getDatabaseStatus() {
   };
 }
 
-// server/routes.ts
+// server/session.ts
+import crypto2 from "crypto";
+var SESSION_COOKIE = "wt_session";
+var SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1e3;
+function getSecret() {
+  const secret = process.env.SESSION_SECRET;
+  if (secret && secret.length >= 16) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("SESSION_SECRET must be set (min 16 chars) in production");
+  }
+  return "wonderteam-insecure-dev-secret";
+}
+function base64url(input) {
+  return input.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function hmac(payload) {
+  return crypto2.createHmac("sha256", getSecret()).update(payload).digest();
+}
+function signSession(userId) {
+  const expiresAt = Date.now() + SESSION_TTL_MS;
+  const payload = `${base64url(Buffer.from(userId))}.${expiresAt}`;
+  return `${payload}.${base64url(hmac(payload))}`;
+}
+function verifySession(token) {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [userIdB64, expiresAtRaw, signature] = parts;
+  const expiresAt = Number(expiresAtRaw);
+  if (!Number.isFinite(expiresAt) || Date.now() > expiresAt) return null;
+  const expected = hmac(`${userIdB64}.${expiresAtRaw}`);
+  const provided = Buffer.from(signature, "base64");
+  if (provided.length !== expected.length) return null;
+  if (!crypto2.timingSafeEqual(provided, expected)) return null;
+  let userId;
+  try {
+    userId = Buffer.from(userIdB64, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+  if (!userId) return null;
+  return { id: userId };
+}
+function cookieOptions() {
+  return {
+    httpOnly: true,
+    sameSite: "strict",
+    // Disabled outside production so the PWA can be tested over a LAN IP
+    // (http://192.168.x.x), where Secure cookies are rejected by browsers.
+    secure: process.env.NODE_ENV === "production",
+    maxAge: SESSION_TTL_MS,
+    path: "/"
+  };
+}
+function identityMismatch(req, session) {
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const query = req.query && typeof req.query === "object" ? req.query : {};
+  const identityClaims = [];
+  if (typeof body.userId === "string") identityClaims.push(body.userId);
+  if (typeof query.userId === "string") identityClaims.push(query.userId);
+  if (identityClaims.some((id) => id !== session.id)) {
+    return "Request identity does not match the active session";
+  }
+  const adminClaims = [];
+  if (typeof body.adminId === "string") adminClaims.push(body.adminId);
+  if (typeof query.adminId === "string") adminClaims.push(query.adminId);
+  if (adminClaims.length > 0) {
+    if (session.role !== "admin") {
+      return "Administrator privileges cannot be claimed by this session";
+    }
+    if (adminClaims.some((id) => id !== session.id)) {
+      return "Administrator identity does not match the active session";
+    }
+  }
+  const requestedRole = query.role ?? body.role;
+  if (typeof requestedRole === "string" && requestedRole !== session.role) {
+    return "Requested role does not match the active session";
+  }
+  return null;
+}
+
+// server/chat-db.ts
+import { connect } from "@tursodatabase/serverless";
+var client = null;
+var schemaReady = null;
+function chatDbEnabled() {
+  return Boolean(process.env.TURSO_DATABASE_URL);
+}
+function getChatDb() {
+  if (!client) {
+    const url = process.env.TURSO_DATABASE_URL;
+    if (!url) {
+      throw new Error("TURSO_DATABASE_URL is not configured");
+    }
+    client = connect({
+      url,
+      authToken: process.env.TURSO_AUTH_TOKEN
+    });
+  }
+  return client;
+}
+async function initSchema() {
+  const db = getChatDb();
+  await db.batch(
+    [
+      `CREATE TABLE IF NOT EXISTS messages (
+         id           TEXT PRIMARY KEY,
+         seq          INTEGER NOT NULL,
+         thread_id    TEXT NOT NULL,
+         sender_id    TEXT NOT NULL,
+         recipient_id TEXT NOT NULL,
+         body         TEXT NOT NULL,
+         created_at   TEXT NOT NULL
+       )`,
+      `CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages (thread_id, seq)`,
+      `CREATE TABLE IF NOT EXISTS thread_seq (
+         thread_id TEXT PRIMARY KEY,
+         next_seq  INTEGER NOT NULL
+       )`,
+      `CREATE TABLE IF NOT EXISTS reads (
+         thread_id     TEXT NOT NULL,
+         reader_id     TEXT NOT NULL,
+         last_seen_seq INTEGER NOT NULL DEFAULT 0,
+         last_read_seq INTEGER NOT NULL DEFAULT 0,
+         PRIMARY KEY (thread_id, reader_id)
+       )`
+    ],
+    "write"
+  );
+}
+function ensureChatSchema() {
+  if (!chatDbEnabled()) {
+    return Promise.reject(new Error("TURSO_DATABASE_URL is not configured"));
+  }
+  if (!schemaReady) {
+    schemaReady = initSchema().catch((err) => {
+      schemaReady = null;
+      throw err;
+    });
+  }
+  return schemaReady;
+}
+function threadIdFor(a, b) {
+  return [a, b].sort().join(":");
+}
+function peerOfThreadId(threadId, readerId) {
+  const separator = threadId.indexOf(":");
+  if (separator < 0) return "";
+  const left = threadId.slice(0, separator);
+  const right = threadId.slice(separator + 1);
+  return left === readerId ? right : left;
+}
+function canMessage(sender, recipient) {
+  if (sender.id === recipient.id) return false;
+  return sender.role === "admin" || recipient.role === "admin";
+}
+function resolveThreadPeer(threadId, me, users) {
+  const parts = String(threadId || "").split(":");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const [left, right] = parts;
+  if (left !== me.id && right !== me.id) return null;
+  const peerId = left === me.id ? right : left;
+  if (peerId === me.id) return null;
+  return users.find((u) => u.id === peerId) || null;
+}
+function toMessage(row) {
+  return {
+    id: row.id,
+    seq: Number(row.seq),
+    threadId: row.thread_id,
+    senderId: row.sender_id,
+    recipientId: row.recipient_id,
+    body: row.body,
+    createdAt: row.created_at
+  };
+}
+async function saveMessage(params) {
+  await ensureChatSchema();
+  const db = getChatDb();
+  const threadId = threadIdFor(params.senderId, params.recipientId);
+  const existing = await db.get(
+    "SELECT id, seq, created_at FROM messages WHERE id = ?",
+    params.id
+  );
+  if (existing) {
+    return {
+      id: String(existing.id),
+      seq: Number(existing.seq),
+      createdAt: String(existing.created_at),
+      duplicate: true
+    };
+  }
+  const reserved = await db.get(
+    `INSERT INTO thread_seq (thread_id, next_seq) VALUES (?, 1)
+     ON CONFLICT (thread_id) DO UPDATE SET next_seq = next_seq + 1
+     RETURNING next_seq`,
+    threadId
+  );
+  const seq = Number(reserved.next_seq);
+  await db.run(
+    `INSERT OR IGNORE INTO messages
+       (id, seq, thread_id, sender_id, recipient_id, body, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    params.id,
+    seq,
+    threadId,
+    params.senderId,
+    params.recipientId,
+    params.body,
+    params.createdAt
+  );
+  const stored = await db.get(
+    "SELECT id, seq, created_at FROM messages WHERE id = ?",
+    params.id
+  );
+  if (!stored) {
+    throw new Error("Message insert did not persist");
+  }
+  return {
+    id: String(stored.id),
+    seq: Number(stored.seq),
+    createdAt: String(stored.created_at),
+    duplicate: Number(stored.seq) !== seq
+  };
+}
+async function listMessages(threadId, sinceSeq, limit = 200) {
+  await ensureChatSchema();
+  const rows = await getChatDb().all(
+    `SELECT id, seq, thread_id, sender_id, recipient_id, body, created_at
+     FROM messages
+     WHERE thread_id = ? AND seq > ?
+     ORDER BY seq ASC
+     LIMIT ?`,
+    threadId,
+    sinceSeq,
+    limit
+  );
+  return rows.map(toMessage);
+}
+async function getReadState(threadId, readerId) {
+  await ensureChatSchema();
+  const row = await getChatDb().get(
+    `SELECT last_seen_seq, last_read_seq FROM reads
+     WHERE thread_id = ? AND reader_id = ?`,
+    threadId,
+    readerId
+  );
+  if (!row) return { lastSeenSeq: 0, lastReadSeq: 0 };
+  return {
+    lastSeenSeq: Number(row.last_seen_seq),
+    lastReadSeq: Number(row.last_read_seq)
+  };
+}
+async function markSeen(threadId, readerId, seenSeq) {
+  await ensureChatSchema();
+  await getChatDb().run(
+    `INSERT INTO reads (thread_id, reader_id, last_seen_seq, last_read_seq)
+     VALUES (?, ?, ?, 0)
+     ON CONFLICT (thread_id, reader_id) DO UPDATE
+       SET last_seen_seq = MAX(last_seen_seq, excluded.last_seen_seq)`,
+    threadId,
+    readerId,
+    seenSeq
+  );
+}
+async function markRead(threadId, readerId, readSeq) {
+  await ensureChatSchema();
+  await getChatDb().run(
+    `INSERT INTO reads (thread_id, reader_id, last_seen_seq, last_read_seq)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT (thread_id, reader_id) DO UPDATE SET
+       last_seen_seq = MAX(last_seen_seq, excluded.last_seen_seq),
+       last_read_seq = MAX(last_read_seq, excluded.last_read_seq)`,
+    threadId,
+    readerId,
+    readSeq,
+    readSeq
+  );
+}
+async function listThreadSummaries(readerId) {
+  await ensureChatSchema();
+  const db = getChatDb();
+  const latestRows = await db.all(
+    `SELECT m.thread_id AS thread_id, m.body AS body, m.created_at AS created_at
+     FROM messages m
+     WHERE m.seq = (
+             SELECT MAX(m2.seq) FROM messages m2 WHERE m2.thread_id = m.thread_id
+           )
+       AND (m.sender_id = ? OR m.recipient_id = ?)`,
+    readerId,
+    readerId
+  );
+  const unreadRows = await db.all(
+    `SELECT m.thread_id AS thread_id, COUNT(*) AS unread
+     FROM messages m
+     LEFT JOIN reads r
+            ON r.thread_id = m.thread_id
+           AND r.reader_id = ?
+     WHERE m.sender_id <> ?
+       AND m.seq > IFNULL(r.last_read_seq, 0)
+     GROUP BY m.thread_id`,
+    readerId,
+    readerId
+  );
+  const unreadByThread = /* @__PURE__ */ new Map();
+  for (const row of unreadRows) {
+    unreadByThread.set(row.thread_id, Number(row.unread));
+  }
+  return latestRows.map((row) => ({
+    threadId: row.thread_id,
+    peerId: peerOfThreadId(row.thread_id, readerId),
+    lastMessage: row.body,
+    lastMessageAt: row.created_at,
+    unreadCount: unreadByThread.get(row.thread_id) ?? 0
+  }));
+}
+
+// server/wat.ts
+function getGMT1Info(d = /* @__PURE__ */ new Date(), simulatedTime) {
+  const totalMin = (() => {
+    if (simulatedTime && typeof simulatedTime.hour === "number") {
+      return simulatedTime.hour * 60 + (simulatedTime.minute ?? 0);
+    }
+    const formatter = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Africa/Lagos",
+      hour: "numeric",
+      minute: "numeric",
+      hour12: false
+    });
+    const parts = formatter.formatToParts(d);
+    const h2 = parseInt(parts.find((p) => p.type === "hour")?.value || "0", 10);
+    const m2 = parseInt(parts.find((p) => p.type === "minute")?.value || "0", 10);
+    return h2 * 60 + m2;
+  })();
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  let h12 = h % 12;
+  h12 = h12 ? h12 : 12;
+  const ampm = h >= 12 ? "PM" : "AM";
+  const strH = String(h12).padStart(2, "0");
+  const strM = String(m).padStart(2, "0");
+  const timeStr = `${strH}:${strM} ${ampm}`;
+  return {
+    h,
+    m,
+    totalMin,
+    timeStr,
+    isBefore930: totalMin < 570,
+    isPast1000: totalMin > 600,
+    isBetween930and1000: totalMin >= 570 && totalMin <= 600,
+    isBeforeTodoWindow: totalMin < 570,
+    isWithinTodoWindow: totalMin >= 570 && totalMin <= 660,
+    isPast1100: totalMin > 660
+  };
+}
+function getWATPeriodDetails(hour) {
+  if (hour >= 0 && hour < 5) {
+    return { period: "1am_midnight", timeTitle: "1:00 AM Midnight Visionary Hustle" };
+  }
+  if (hour >= 5 && hour < 12) {
+    return { period: "morning", timeTitle: "Morning Ignition & Prospecting Power" };
+  }
+  if (hour >= 12 && hour < 18) {
+    return { period: "afternoon", timeTitle: "Afternoon Momentum & Presentation Drive" };
+  }
+  return { period: "night", timeTitle: "Night Reflection & Daily Volume Review" };
+}
+var CURATED_MOTIVATIONAL_QUOTES = {
+  morning: [
+    {
+      quote: "Either you run the day or the day runs you. Start your morning with Income Producing Activities before anything else.",
+      author: "Jim Rohn"
+    },
+    {
+      quote: "Discipline is the bridge between your goals and your team milestones. Win the morning, win the business.",
+      author: "Jim Rohn"
+    },
+    {
+      quote: "Success in networking and freelancing is simply a few simple disciplines, practiced every single morning without fail.",
+      author: "Eric Worre"
+    },
+    {
+      quote: "Your attitude this morning sets the altitude of your entire day. Reach out to three prospective partners or clients before noon.",
+      author: "Zig Ziglar"
+    }
+  ],
+  afternoon: [
+    {
+      quote: "The fortune is in the follow-up. Keep your afternoon pipeline active and connect with every interested prospect.",
+      author: "Eric Worre"
+    },
+    {
+      quote: "Action cures fear. Inaction breeds doubt. Reach out to that prospect and deliver that client presentation now.",
+      author: "Norman Vincent Peale"
+    },
+    {
+      quote: "You don't have to be great to start, but you must start to be great. Finish today's pitches with passion.",
+      author: "Les Brown"
+    },
+    {
+      quote: "Energy flows where focus goes. Stay locked on your daily income-producing calls and project deliverables.",
+      author: "Tony Robbins"
+    }
+  ],
+  night: [
+    {
+      quote: "Review your day with honesty: Did you touch your dream today with real conversations? Consistent seeds multiply into generational legacy.",
+      author: "John C. Maxwell"
+    },
+    {
+      quote: "Preparation tonight creates victory tomorrow. Lock in your top Income Producing Activities before going to rest.",
+      author: "Brian Tracy"
+    },
+    {
+      quote: "Rest if you must, but never quit. Every follow-up and presentation you delivered today is building compounding freedom.",
+      author: "Les Brown"
+    },
+    {
+      quote: "Never go to sleep without a request to your mind for tomorrow's prospecting and leadership breakthrough.",
+      author: "Thomas Edison"
+    }
+  ],
+  "1am_midnight": [
+    {
+      quote: "While the world is sleeping, the true visionaries are building. The late night hours you invest in your mind and your vision will pay lifelong dividends.",
+      author: "Napoleon Hill"
+    },
+    {
+      quote: "1:00 AM is where champions are forged. When the average have checked out, your burning desire and relentless drive keep your dream alive.",
+      author: "Eric Thomas"
+    },
+    {
+      quote: "The midnight oil you burn today creates the freedom and financial independence that most people will only ever dream of tomorrow.",
+      author: "Jim Rohn"
+    },
+    {
+      quote: "Greatness is built in the quiet, unseen hours. Stand firm in your belief, feed your entrepreneur spirit, and know your harvest is coming.",
+      author: "Les Brown"
+    }
+  ]
+};
+function pickCuratedQuote(period, seed) {
+  const list = CURATED_MOTIVATIONAL_QUOTES[period];
+  return list[Math.abs(seed) % list.length];
+}
+
+// server/notificationRoutes.ts
+import { Router } from "express";
+
+// server/push.ts
+import webpush from "web-push";
+function vapidSubject() {
+  const explicit = process.env.VAPID_SUBJECT?.trim();
+  if (explicit) return explicit.startsWith("mailto:") || explicit.startsWith("https:") ? explicit : `mailto:${explicit}`;
+  const leaderEmail = process.env.TEAM_LEADER_EMAIL?.trim() || "admin@wonderteam.com";
+  return `mailto:${leaderEmail}`;
+}
+var cachedKeys = null;
+function applyKeys(keys) {
+  webpush.setVapidDetails(keys.subject, keys.publicKey, keys.privateKey);
+  cachedKeys = keys;
+}
+function keysFromEnv() {
+  const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
+  const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
+  if (!publicKey || !privateKey) return null;
+  return { publicKey, privateKey, subject: vapidSubject() };
+}
+async function getVapidKeys() {
+  if (cachedKeys) return cachedKeys;
+  const fromEnv = keysFromEnv();
+  if (fromEnv) {
+    applyKeys(fromEnv);
+    return fromEnv;
+  }
+  const db = await getDb();
+  const stored = db.vapidKeys;
+  if (stored?.publicKey && stored?.privateKey) {
+    const keys2 = {
+      publicKey: stored.publicKey,
+      privateKey: stored.privateKey,
+      subject: stored.subject || vapidSubject()
+    };
+    applyKeys(keys2);
+    return keys2;
+  }
+  const generated = webpush.generateVAPIDKeys();
+  const keys = {
+    publicKey: generated.publicKey,
+    privateKey: generated.privateKey,
+    subject: vapidSubject()
+  };
+  db.vapidKeys = keys;
+  await saveDb(db);
+  applyKeys(keys);
+  return keys;
+}
+function toWebPushSubscription(record) {
+  return {
+    endpoint: record.endpoint,
+    keys: {
+      p256dh: record.keys.p256dh,
+      auth: record.keys.auth
+    }
+  };
+}
+function isExpiredEndpoint(err) {
+  const status = err?.statusCode;
+  return status === 404 || status === 410;
+}
+async function sendPushToEndpoint(record, payload) {
+  try {
+    await webpush.sendNotification(toWebPushSubscription(record), JSON.stringify(payload), {
+      TTL: 60 * 60 * 12,
+      urgency: payload.urgency || "normal"
+    });
+    return { ok: true, prune: false };
+  } catch (err) {
+    if (isExpiredEndpoint(err)) return { ok: false, prune: true, error: err?.message || "Subscription expired" };
+    return { ok: false, prune: false, error: err?.message || "Push delivery failed" };
+  }
+}
+async function sendPushToUser(db, userId, payload, filter) {
+  const targets = (db.pushSubscriptions || []).filter(
+    (s) => s.userId === userId && (!filter || filter(s))
+  );
+  if (targets.length === 0) return { delivered: 0, failed: 0, pruned: 0 };
+  const expired = [];
+  let delivered = 0;
+  let failed = 0;
+  const results = await Promise.all(
+    targets.map(async (record) => {
+      const result = await sendPushToEndpoint(record, payload);
+      if (result.prune) expired.push(record.id);
+      return result;
+    })
+  );
+  for (const result of results) {
+    if (result.ok) delivered += 1;
+    else failed += 1;
+  }
+  if (expired.length > 0) {
+    db.pushSubscriptions = (db.pushSubscriptions || []).filter((s) => !expired.includes(s.id));
+  }
+  return { delivered, failed, pruned: expired.length };
+}
+async function sendPushToAllSubscribers(db, payload, userFilter) {
+  const userIds = Array.from(new Set((db.pushSubscriptions || []).map((s) => s.userId))).filter(
+    (id) => userFilter ? userFilter(id) : true
+  );
+  let delivered = 0;
+  let failed = 0;
+  let pruned = 0;
+  for (const userId of userIds) {
+    const result = await sendPushToUser(db, userId, payload);
+    delivered += result.delivered;
+    failed += result.failed;
+    pruned += result.pruned;
+  }
+  return { delivered, failed, pruned };
+}
+async function countSubscriptions(db) {
+  const state = db || await getDb();
+  return (state.pushSubscriptions || []).length;
+}
+
+// server/reminders.ts
+function getPreferences(db, userId) {
+  const stored = (db.notificationPreferences || []).find((p) => p.userId === userId);
+  return { ...getDefaultNotificationPreferences(userId), ...stored || {} };
+}
+function isWithinQuietHours(prefs, gmt1Hour) {
+  const { quietHoursStart: start, quietHoursEnd: end } = prefs;
+  if (start === null || end === null) return false;
+  if (start === end) return true;
+  if (start < end) return gmt1Hour >= start && gmt1Hour < end;
+  return gmt1Hour >= start || gmt1Hour < end;
+}
+function isTypeEnabled(prefs, type) {
+  if (!prefs.enabled) return false;
+  switch (type) {
+    case "message":
+      return prefs.messages;
+    case "motivation":
+      return prefs.motivation;
+    case "todo":
+      return prefs.todos;
+    case "budget":
+      return prefs.budget;
+    case "attendance":
+      return prefs.attendance;
+    case "reading":
+      return prefs.reading;
+    default:
+      return true;
+  }
+}
+function getWATDateStr(d = /* @__PURE__ */ new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Lagos",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(d);
+  const y = parts.find((p) => p.type === "year")?.value || "1970";
+  const m = parts.find((p) => p.type === "month")?.value || "01";
+  const day = parts.find((p) => p.type === "day")?.value || "01";
+  return `${y}-${m}-${day}`;
+}
+function getWATMonthStr(d = /* @__PURE__ */ new Date()) {
+  return getWATDateStr(d).slice(0, 7);
+}
+function daySeed(dateStr) {
+  let seed = 0;
+  for (let i = 0; i < dateStr.length; i += 1) seed = (seed * 31 + dateStr.charCodeAt(i)) % 1e5;
+  return seed;
+}
+function isOverdue(task, dateStr) {
+  if (!task.dueDate) return false;
+  return task.dueDate < dateStr && task.status !== "completed";
+}
+function isDueToday(task, dateStr) {
+  return task.dueDate === dateStr && task.status !== "completed";
+}
+function buildReminderDrafts(db, userId) {
+  const user = db.users.find((u) => u.id === userId);
+  if (!user) return [];
+  const prefs = getPreferences(db, userId);
+  if (!prefs.enabled) return [];
+  const gmt1 = getGMT1Info();
+  const today = getWATDateStr();
+  const month = getWATMonthStr();
+  const seed = daySeed(today);
+  const firstName = (user.name || "Member").split(" ")[0];
+  const drafts = [];
+  const attendanceToday = (db.attendance || []).find((a) => a.userId === userId && a.date === today);
+  const hasClockedIn = Boolean(attendanceToday?.clockIn);
+  const isClockedOut = Boolean(attendanceToday?.clockOut);
+  const tasks = (db.tasks || []).filter((t) => t.assigneeId === userId);
+  const overdueTasks = tasks.filter((t) => isOverdue(t, today));
+  const dueTodayTasks = tasks.filter((t) => isDueToday(t, today));
+  const pendingTasks = tasks.filter((t) => t.status !== "completed");
+  const monthSpending = (db.spending || []).filter((s) => s.userId === userId && (s.date || "").startsWith(month));
+  const spent = monthSpending.reduce((sum, s) => sum + (Number(s.amount) || 0), 0);
+  const budget = (db.budgets || []).find((b) => b.userId === userId && b.month === month);
+  const monthlyBudget = Number(budget?.monthlyBudget) || 0;
+  const budgetPercent = monthlyBudget > 0 ? Math.round(spent / monthlyBudget * 100) : 0;
+  const readingBooks = (db.savedBooks || []).filter((b) => b.userId === userId && b.status === "reading");
+  if (isTypeEnabled(prefs, "attendance") && !hasClockedIn) {
+    if (gmt1.isBetween930and1000) {
+      drafts.push({
+        key: `attendance-checkin-${today}`,
+        type: "attendance",
+        title: "Clock in now",
+        body: `Good morning ${firstName}. The office register closes at 10:00 AM WAT - clock in to protect your streak.`,
+        link: "home"
+      });
+    } else if (gmt1.totalMin > 600 && gmt1.totalMin < 780) {
+      drafts.push({
+        key: `attendance-missed-${today}`,
+        type: "attendance",
+        title: "You have not clocked in",
+        body: `It is ${gmt1.timeStr} WAT and your attendance is still unmarked. Your team leader can see this status.`,
+        link: "home"
+      });
+    }
+  }
+  if (isTypeEnabled(prefs, "attendance") && hasClockedIn && !isClockedOut) {
+    const hoursWorked = attendanceRecordHours(attendanceToday?.clockInTimestamp);
+    if (hoursWorked >= 9) {
+      drafts.push({
+        key: `attendance-clockout-${today}`,
+        type: "attendance",
+        title: "Ready to clock out?",
+        body: `You are ${Math.floor(hoursWorked)}h into today's shift. Close your register entry so the duration is recorded.`,
+        link: "home"
+      });
+    }
+  }
+  if (isTypeEnabled(prefs, "todo")) {
+    const hasTodoToday = tasks.some((t) => (t.createdAt || "").startsWith(today));
+    if (gmt1.isWithinTodoWindow && !hasTodoToday) {
+      drafts.push({
+        key: `todo-window-${today}`,
+        type: "todo",
+        title: "Write your to-do list",
+        body: `${firstName}, the to-do window closes at 11:00 AM WAT. An empty list is logged as unserious by the team leader.`,
+        link: "tasks"
+      });
+    }
+    if (overdueTasks.length > 0) {
+      drafts.push({
+        key: `todo-overdue-${today}`,
+        type: "todo",
+        title: `${overdueTasks.length} overdue task${overdueTasks.length === 1 ? "" : "s"}`,
+        body: `Still open: ${overdueTasks.slice(0, 3).map((t) => t.title).join(", ")}${overdueTasks.length > 3 ? " and more" : ""}.`,
+        link: "tasks"
+      });
+    }
+    if (gmt1.h >= 17 && dueTodayTasks.length > 0) {
+      drafts.push({
+        key: `todo-eod-${today}`,
+        type: "todo",
+        title: "Close out your tasks",
+        body: `${dueTodayTasks.length} task${dueTodayTasks.length === 1 ? "" : "s"} were due today. Complete or reschedule them before the night review.`,
+        link: "tasks"
+      });
+    }
+    if (gmt1.h >= 19 && pendingTasks.length > 0 && overdueTasks.length === 0 && dueTodayTasks.length === 0) {
+      drafts.push({
+        key: `todo-plan-tomorrow-${today}`,
+        type: "todo",
+        title: "Plan tomorrow",
+        body: `${pendingTasks.length} open task${pendingTasks.length === 1 ? "" : "s"} carry over. Set tomorrow's Income Producing Activities now.`,
+        link: "tasks"
+      });
+    }
+  }
+  if (isTypeEnabled(prefs, "budget") && monthlyBudget > 0 && spent > 0) {
+    if (budgetPercent >= 100) {
+      drafts.push({
+        key: `budget-over-${month}`,
+        type: "budget",
+        title: "Monthly budget exceeded",
+        body: `You have spent \u20A6${spent.toLocaleString("en-NG")} of your \u20A6${monthlyBudget.toLocaleString("en-NG")} budget for ${month}. Pause new spending and review your ledger.`,
+        link: "spending"
+      });
+    } else if (budgetPercent >= 80) {
+      drafts.push({
+        key: `budget-near-${month}`,
+        type: "budget",
+        title: `${budgetPercent}% of your budget used`,
+        body: `\u20A6${spent.toLocaleString("en-NG")} of \u20A6${monthlyBudget.toLocaleString("en-NG")} spent for ${month}. \u20A6${(monthlyBudget - spent).toLocaleString("en-NG")} left.`,
+        link: "spending"
+      });
+    }
+  }
+  if (isTypeEnabled(prefs, "motivation")) {
+    const { period, timeTitle } = getWATPeriodDetails(gmt1.h);
+    const periodIndex = period === "morning" ? 0 : period === "afternoon" ? 1 : period === "night" ? 2 : 3;
+    const streak = (db.attendance || []).filter(
+      (a) => a.userId === userId && (a.status === "present" || a.status === "clocked_out")
+    ).length;
+    const quote = pickCuratedQuote(period, seed + periodIndex);
+    drafts.push({
+      key: `quote-${today}-${period}`,
+      type: "motivation",
+      title: timeTitle,
+      body: `"${quote.quote}" - ${quote.author}${streak > 0 ? ` \xB7 ${streak}-day attendance streak active.` : ""}`,
+      link: "home"
+    });
+  }
+  if (isTypeEnabled(prefs, "reading") && readingBooks.length > 0 && gmt1.h >= 20) {
+    drafts.push({
+      key: `reading-${today}`,
+      type: "reading",
+      title: "Growth library time",
+      body: `You have ${readingBooks.length} book${readingBooks.length === 1 ? "" : "s"} in progress: ${readingBooks.slice(0, 2).map((b) => b.title).join(", ")}. A few pages tonight keeps the momentum.`,
+      link: "library"
+    });
+  }
+  return drafts;
+}
+function attendanceRecordHours(clockInTimestamp) {
+  if (!clockInTimestamp) return 0;
+  return (Date.now() - clockInTimestamp) / 36e5;
+}
+function hasAlreadyNotified(db, userId, key) {
+  return (db.notifications || []).some(
+    (n) => n.userId === userId && typeof n.meta?.reminderKey === "string" && n.meta.reminderKey === key
+  );
+}
+function createReminderNotification(userId, draft) {
+  return {
+    id: `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId,
+    type: draft.type,
+    title: draft.title,
+    body: draft.body,
+    link: draft.link,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    readBy: [],
+    meta: { reminderKey: draft.key, delivery: "push" }
+  };
+}
+var MAX_NOTIFICATIONS = 400;
+function trimNotifications(notifications) {
+  if (notifications.length <= MAX_NOTIFICATIONS) return notifications;
+  const sorted = [...notifications].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+  );
+  return sorted.slice(0, MAX_NOTIFICATIONS);
+}
+
+// server/notificationRoutes.ts
 var router = Router();
+var cronRouter = Router();
+function requireCronSecret(req, res, next) {
+  const secret = process.env.CRON_SECRET?.trim();
+  if (!secret && process.env.NODE_ENV !== "production") return next();
+  const header = req.get("authorization") || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (secret && token === secret) return next();
+  return res.status(401).json({
+    error: "Invalid or missing cron secret",
+    detail: secret ? "Set CRON_SECRET to the same value in the project environment so Vercel Cron can authenticate." : "CRON_SECRET is not set, so scheduled reminders cannot be delivered. Members with the app open still get reminders."
+  });
+}
+var NOTIFICATION_TYPES = [
+  "message",
+  "motivation",
+  "todo",
+  "budget",
+  "attendance",
+  "reading",
+  "system"
+];
+var BROADCAST_TARGET_ALL = "all";
+function buildPushPayload(notification) {
+  return {
+    title: notification.title,
+    body: notification.body,
+    icon: notification.icon || "/icon-192.png",
+    badge: "/icon-192.png",
+    tag: `wonderteam-${notification.id}`,
+    renotify: true,
+    requireInteraction: notification.type === "message",
+    urgency: notification.type === "message" ? "high" : "normal",
+    timestamp: Date.now(),
+    data: {
+      notificationId: notification.id,
+      type: notification.type,
+      link: notification.link,
+      createdAt: notification.createdAt
+    }
+  };
+}
+function normalizeSubscription(input) {
+  const endpoint = input?.endpoint || input?.subscription?.endpoint;
+  const keys = input?.keys || input?.subscription?.keys;
+  if (typeof endpoint !== "string" || !endpoint.startsWith("https://")) return null;
+  if (!keys?.p256dh || !keys?.auth) return null;
+  return { endpoint, keys: { p256dh: String(keys.p256dh), auth: String(keys.auth) } };
+}
+function findVisibleNotifications(db, userId) {
+  return (db.notifications || []).filter((n) => n.userId === userId || n.userId === BROADCAST_TARGET_ALL).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+function isVisibleTo(notification, userId) {
+  return notification.userId === userId || notification.userId === BROADCAST_TARGET_ALL;
+}
+function sessionUserId(req) {
+  return req.user?.id;
+}
+function sessionIsAdmin(req) {
+  return req.isAdmin === true;
+}
+async function deliverDirectNotification(input) {
+  const db = await getDb();
+  if (!db.users.some((u) => u.id === input.userId)) return null;
+  const prefs = getPreferences(db, input.userId);
+  const notification = {
+    id: `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId: input.userId,
+    type: input.type,
+    title: input.title,
+    body: input.body,
+    link: input.link,
+    createdBy: input.createdBy,
+    createdByName: input.createdByName,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    readBy: [],
+    meta: input.meta
+  };
+  db.notifications = trimNotifications([...db.notifications || [], notification]);
+  if (isTypeEnabled(prefs, input.type) && !isWithinQuietHours(prefs, getGMT1Info().h)) {
+    await sendPushToUser(db, input.userId, buildPushPayload(notification));
+  }
+  await saveDb(db);
+  return notification;
+}
+router.get("/push/vapid-key", async (_req, res) => {
+  try {
+    const keys = await getVapidKeys();
+    return res.json({ publicKey: keys.publicKey });
+  } catch (err) {
+    console.error("Failed to resolve VAPID key:", err?.message);
+    return res.status(500).json({ error: "Push notifications are not configured" });
+  }
+});
+router.post("/push/subscribe", async (req, res) => {
+  const userId = sessionUserId(req);
+  const userAgent = req.get("user-agent") || void 0;
+  const normalized = normalizeSubscription(req.body?.subscription);
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  if (!normalized) return res.status(400).json({ error: "A valid push subscription is required" });
+  const db = await getDb();
+  if (!db.users.some((u) => u.id === userId)) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  db.pushSubscriptions = db.pushSubscriptions || [];
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const existing = db.pushSubscriptions.find((s) => s.endpoint === normalized.endpoint);
+  if (existing) {
+    existing.userId = userId;
+    existing.keys = normalized.keys;
+    existing.lastUsedAt = now;
+    if (userAgent) existing.userAgent = userAgent;
+  } else {
+    db.pushSubscriptions.push({
+      id: `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      userId,
+      endpoint: normalized.endpoint,
+      keys: normalized.keys,
+      userAgent,
+      createdAt: now,
+      lastUsedAt: now
+    });
+  }
+  await saveDb(db);
+  return res.json({ success: true, subscribed: true });
+});
+router.post("/push/unsubscribe", async (req, res) => {
+  const userId = sessionUserId(req);
+  const { endpoint } = req.body || {};
+  if (!userId || typeof endpoint !== "string" || !endpoint) {
+    return res.status(400).json({ error: "endpoint is required" });
+  }
+  const db = await getDb();
+  const before = (db.pushSubscriptions || []).length;
+  db.pushSubscriptions = (db.pushSubscriptions || []).filter(
+    (s) => !(s.userId === userId && s.endpoint === endpoint)
+  );
+  const removed = before !== db.pushSubscriptions.length;
+  if (removed) await saveDb(db);
+  return res.json({ success: true, removed });
+});
+router.get("/push/status", async (req, res) => {
+  const userId = sessionUserId(req);
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  const db = await getDb();
+  const devices = (db.pushSubscriptions || []).filter((s) => s.userId === userId);
+  return res.json({
+    subscribed: devices.length > 0,
+    deviceCount: devices.length,
+    teamDeviceCount: await countSubscriptions(db),
+    preferences: getPreferences(db, userId)
+  });
+});
+router.get("/push/preferences", async (req, res) => {
+  const userId = sessionUserId(req);
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  const db = await getDb();
+  return res.json({ preferences: getPreferences(db, userId) });
+});
+router.post("/push/preferences", async (req, res) => {
+  const userId = sessionUserId(req);
+  const preferences = req.body?.preferences;
+  if (!userId || !preferences) {
+    return res.status(400).json({ error: "preferences are required" });
+  }
+  const db = await getDb();
+  const current = getPreferences(db, userId);
+  const clampHour = (value, fallback) => {
+    if (value === null) return null;
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < 0 || num > 23) return fallback;
+    return Math.round(num);
+  };
+  const next = {
+    ...current,
+    enabled: preferences.enabled === void 0 ? current.enabled : Boolean(preferences.enabled),
+    messages: preferences.messages === void 0 ? current.messages : Boolean(preferences.messages),
+    motivation: preferences.motivation === void 0 ? current.motivation : Boolean(preferences.motivation),
+    todos: preferences.todos === void 0 ? current.todos : Boolean(preferences.todos),
+    budget: preferences.budget === void 0 ? current.budget : Boolean(preferences.budget),
+    attendance: preferences.attendance === void 0 ? current.attendance : Boolean(preferences.attendance),
+    reading: preferences.reading === void 0 ? current.reading : Boolean(preferences.reading),
+    quietHoursStart: clampHour(preferences.quietHoursStart, current.quietHoursStart),
+    quietHoursEnd: clampHour(preferences.quietHoursEnd, current.quietHoursEnd)
+  };
+  db.notificationPreferences = db.notificationPreferences || [];
+  const index = db.notificationPreferences.findIndex((p) => p.userId === userId);
+  if (index >= 0) db.notificationPreferences[index] = next;
+  else db.notificationPreferences.push(next);
+  if (!next.enabled) {
+    db.pushSubscriptions = (db.pushSubscriptions || []).filter((s) => s.userId !== userId);
+  }
+  await saveDb(db);
+  return res.json({ success: true, preferences: next });
+});
+router.get("/notifications", async (req, res) => {
+  const userId = sessionUserId(req);
+  const limit = Math.min(Number(req.query.limit) || 40, 100);
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  const db = await getDb();
+  const all = findVisibleNotifications(db, userId);
+  const notifications = all.slice(0, limit).map((n) => ({
+    ...n,
+    read: (n.readBy || []).includes(userId)
+  }));
+  return res.json({
+    notifications,
+    unreadCount: all.filter((n) => !(n.readBy || []).includes(userId)).length,
+    totalCount: all.length,
+    preferences: getPreferences(db, userId),
+    subscribed: (db.pushSubscriptions || []).some((s) => s.userId === userId)
+  });
+});
+router.post("/notifications/read", async (req, res) => {
+  const userId = sessionUserId(req);
+  const { ids, all } = req.body || {};
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  const db = await getDb();
+  const targets = (db.notifications || []).filter(
+    (n) => isVisibleTo(n, userId) && (all === true || Array.isArray(ids) && ids.includes(n.id))
+  );
+  for (const notification of targets) {
+    notification.readBy = notification.readBy || [];
+    if (!notification.readBy.includes(userId)) notification.readBy.push(userId);
+  }
+  if (targets.length > 0) await saveDb(db);
+  return res.json({ success: true, updated: targets.length });
+});
+router.post("/notifications/delete", async (req, res) => {
+  const userId = sessionUserId(req);
+  const { id } = req.body || {};
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  if (typeof id !== "string" || !id) return res.status(400).json({ error: "id is required" });
+  const db = await getDb();
+  const before = (db.notifications || []).length;
+  db.notifications = (db.notifications || []).filter((n) => n.id !== id || !isVisibleTo(n, userId));
+  if (db.notifications.length !== before) await saveDb(db);
+  return res.json({ success: true });
+});
+router.post("/notifications/send", async (req, res) => {
+  const { title, body, type, link, targetUserId } = req.body || {};
+  if (!sessionIsAdmin(req)) {
+    return res.status(403).json({ error: "Unauthorized: Admin privileges required to send team messages" });
+  }
+  if (!title || !body) return res.status(400).json({ error: "title and body are required" });
+  const notificationType = NOTIFICATION_TYPES.includes(type) ? type : "message";
+  const db = await getDb();
+  const admin = req.user;
+  const target = typeof targetUserId === "string" && targetUserId ? targetUserId : BROADCAST_TARGET_ALL;
+  if (target !== BROADCAST_TARGET_ALL && !db.users.some((u) => u.id === target)) {
+    return res.status(404).json({ error: "Target user not found" });
+  }
+  const notification = {
+    id: `ntf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    userId: target,
+    type: notificationType,
+    title: String(title).slice(0, 120),
+    body: String(body).slice(0, 500),
+    link: typeof link === "string" && link ? link.slice(0, 40) : void 0,
+    createdBy: admin.id,
+    createdByName: admin.name,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    readBy: []
+  };
+  db.notifications = trimNotifications([...db.notifications || [], notification]);
+  const recipientIds = target === BROADCAST_TARGET_ALL ? db.users.map((u) => u.id).filter((id) => id !== admin.id) : [target];
+  let delivered = 0;
+  let failed = 0;
+  for (const userId of recipientIds) {
+    const prefs = getPreferences(db, userId);
+    if (!isTypeEnabled(prefs, notificationType)) continue;
+    if (isWithinQuietHours(prefs, getGMT1Info().h)) continue;
+    const result = await sendPushToUser(db, userId, buildPushPayload(notification));
+    delivered += result.delivered;
+    failed += result.failed;
+  }
+  await saveDb(db);
+  return res.json({
+    success: true,
+    notification,
+    recipients: recipientIds.length,
+    push: { delivered, failed }
+  });
+});
+router.get("/notifications/team-feed", async (_req, res) => {
+  const db = await getDb();
+  const feed = (db.notifications || []).filter((n) => n.userId === BROADCAST_TARGET_ALL).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 20);
+  return res.json({ feed });
+});
+async function commitDrafts(db, userId, drafts) {
+  const created = [];
+  for (const draft of drafts) {
+    if (hasAlreadyNotified(db, userId, draft.key)) continue;
+    const notification = createReminderNotification(userId, draft);
+    created.push(notification);
+    db.notifications = [...db.notifications || [], notification];
+  }
+  if (created.length > 0) db.notifications = trimNotifications(db.notifications);
+  return created;
+}
+router.get("/push/reminders", async (req, res) => {
+  const userId = sessionUserId(req);
+  const persist = req.query.persist !== "false";
+  if (!userId) return res.status(401).json({ error: "Sign in to continue" });
+  const db = await getDb();
+  const prefs = getPreferences(db, userId);
+  const quiet = isWithinQuietHours(prefs, getGMT1Info().h);
+  const pending = buildReminderDrafts(db, userId).filter(
+    (d) => !hasAlreadyNotified(db, userId, d.key)
+  );
+  if (!persist || pending.length === 0) {
+    return res.json({
+      quiet,
+      reminders: persist ? [] : pending.map((d) => ({ id: `preview_${d.key}`, title: d.title, body: d.body, type: d.type, link: d.link }))
+    });
+  }
+  const created = await commitDrafts(db, userId, pending);
+  await saveDb(db);
+  return res.json({
+    quiet,
+    reminders: created.map((n) => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      type: n.type,
+      link: n.link,
+      createdAt: n.createdAt
+    }))
+  });
+});
+cronRouter.get("/push/cron/reminders", requireCronSecret, async (_req, res) => {
+  const db = await getDb();
+  const gmt1 = getGMT1Info();
+  const subscriberIds = Array.from(new Set((db.pushSubscriptions || []).map((s) => s.userId)));
+  const summary = [];
+  let totalCreated = 0;
+  let totalDelivered = 0;
+  for (const userId of subscriberIds) {
+    const prefs = getPreferences(db, userId);
+    const quiet = isWithinQuietHours(prefs, gmt1.h);
+    const drafts = buildReminderDrafts(db, userId).filter((d) => !hasAlreadyNotified(db, userId, d.key));
+    if (drafts.length === 0) continue;
+    const created = await commitDrafts(db, userId, drafts);
+    if (created.length === 0) continue;
+    let delivered = 0;
+    if (!quiet) {
+      for (const notification of created) {
+        const result = await sendPushToUser(db, userId, buildPushPayload(notification));
+        delivered += result.delivered;
+      }
+    }
+    totalCreated += created.length;
+    totalDelivered += delivered;
+    summary.push({ userId, created: created.length, delivered });
+  }
+  db.notifications = trimNotifications(db.notifications || []);
+  await saveDb(db);
+  return res.json({
+    success: true,
+    ranAt: (/* @__PURE__ */ new Date()).toISOString(),
+    watTime: gmt1.timeStr,
+    subscribers: subscriberIds.length,
+    created: totalCreated,
+    delivered: totalDelivered,
+    summary
+  });
+});
+router.post("/push/broadcast-existing", async (req, res) => {
+  const { notificationId } = req.body || {};
+  if (!sessionIsAdmin(req)) {
+    return res.status(403).json({ error: "Administrator privileges required" });
+  }
+  if (!notificationId) return res.status(400).json({ error: "notificationId is required" });
+  const db = await getDb();
+  const notification = (db.notifications || []).find((n) => n.id === notificationId);
+  if (!notification) return res.status(404).json({ error: "Notification not found" });
+  const result = await sendPushToAllSubscribers(db, buildPushPayload(notification));
+  await saveDb(db);
+  return res.json({ success: true, push: result });
+});
+var notificationRoutes_default = router;
+
+// server/routes.ts
+var router2 = Router2();
+var requireSession = async (req, res, next) => {
+  const session = verifySession(req.cookies?.[SESSION_COOKIE]);
+  if (!session) {
+    return res.status(401).json({ error: "Sign in to continue" });
+  }
+  let db;
+  try {
+    db = await getDb();
+  } catch (err) {
+    return res.status(503).json({ error: "Account store unavailable", detail: err?.message });
+  }
+  const user = db.users.find((u) => u.id === session.id);
+  if (!user) {
+    res.clearCookie(SESSION_COOKIE, { path: "/" });
+    return res.status(401).json({ error: "This account is no longer active" });
+  }
+  const mismatch = identityMismatch(req, { id: user.id, role: user.role });
+  if (mismatch) {
+    return res.status(403).json({ error: mismatch });
+  }
+  req.user = user;
+  req.isAdmin = user.role === "admin";
+  next();
+};
 var ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY,
   httpOptions: {
@@ -300,71 +1525,6 @@ var ai = new GoogleGenAI({
     }
   }
 });
-function getGMT1Info(d = /* @__PURE__ */ new Date(), simulatedTime) {
-  if (simulatedTime && typeof simulatedTime.hour === "number") {
-    const h2 = simulatedTime.hour;
-    const m2 = simulatedTime.minute ?? 0;
-    const totalMin2 = h2 * 60 + m2;
-    let h122 = h2 % 12;
-    h122 = h122 ? h122 : 12;
-    const ampm2 = h2 >= 12 ? "PM" : "AM";
-    const strH2 = String(h122).padStart(2, "0");
-    const strM2 = String(m2).padStart(2, "0");
-    const timeStr2 = `${strH2}:${strM2} ${ampm2}`;
-    const isBefore9302 = totalMin2 < 570;
-    const isPast10002 = totalMin2 > 600;
-    const isBetween930and10002 = totalMin2 >= 570 && totalMin2 <= 600;
-    const isBeforeTodoWindow2 = totalMin2 < 570;
-    const isWithinTodoWindow2 = totalMin2 >= 570 && totalMin2 <= 660;
-    const isPast11002 = totalMin2 > 660;
-    return {
-      h: h2,
-      m: m2,
-      totalMin: totalMin2,
-      timeStr: timeStr2,
-      isBefore930: isBefore9302,
-      isPast1000: isPast10002,
-      isBetween930and1000: isBetween930and10002,
-      isBeforeTodoWindow: isBeforeTodoWindow2,
-      isWithinTodoWindow: isWithinTodoWindow2,
-      isPast1100: isPast11002
-    };
-  }
-  const formatter = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Africa/Lagos",
-    hour: "numeric",
-    minute: "numeric",
-    hour12: false
-  });
-  const parts = formatter.formatToParts(d);
-  const h = parseInt(parts.find((p) => p.type === "hour")?.value || "0", 10);
-  const m = parseInt(parts.find((p) => p.type === "minute")?.value || "0", 10);
-  const totalMin = h * 60 + m;
-  let h12 = h % 12;
-  h12 = h12 ? h12 : 12;
-  const ampm = h >= 12 ? "PM" : "AM";
-  const strH = String(h12).padStart(2, "0");
-  const strM = String(m).padStart(2, "0");
-  const timeStr = `${strH}:${strM} ${ampm}`;
-  const isBefore930 = totalMin < 570;
-  const isPast1000 = totalMin > 600;
-  const isBetween930and1000 = totalMin >= 570 && totalMin <= 600;
-  const isBeforeTodoWindow = totalMin < 570;
-  const isWithinTodoWindow = totalMin >= 570 && totalMin <= 660;
-  const isPast1100 = totalMin > 660;
-  return {
-    h,
-    m,
-    totalMin,
-    timeStr,
-    isBefore930,
-    isPast1000,
-    isBetween930and1000,
-    isBeforeTodoWindow,
-    isWithinTodoWindow,
-    isPast1100
-  };
-}
 function calculateDistanceMeters(lat1, lon1, lat2, lon2) {
   const R = 6371e3;
   const rad = (d) => d * Math.PI / 180;
@@ -418,12 +1578,11 @@ function formatDuration(minutes) {
   }
   return `${m}m`;
 }
-router.post("/auth/register", async (req, res) => {
+router2.post("/auth/register", async (req, res) => {
   const {
     name,
     email,
     password,
-    role = "member",
     sponsorName,
     uplineDirector,
     uplineWorldTeamLeader,
@@ -467,7 +1626,7 @@ router.post("/auth/register", async (req, res) => {
   const initials = name.split(" ").map((n) => n[0]).join("").substring(0, 2).toUpperCase();
   const defaultAvatar = `data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">${initials}</text></svg>`;
   const newUser = {
-    id: `usr_${Date.now()}`,
+    id: `usr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
     name,
     email,
     password: hashPassword(password),
@@ -493,9 +1652,10 @@ router.post("/auth/register", async (req, res) => {
   }
   await saveDb(db);
   const { password: _, ...userWithoutPassword } = newUser;
+  res.cookie(SESSION_COOKIE, signSession(newUser.id), cookieOptions());
   return res.status(201).json({ user: userWithoutPassword });
 });
-router.post("/auth/login", async (req, res) => {
+router2.post("/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required." });
@@ -512,14 +1672,30 @@ router.post("/auth/login", async (req, res) => {
     await saveDb(db);
   }
   const { password: _, ...userWithoutPassword } = user;
+  res.cookie(SESSION_COOKIE, signSession(user.id), cookieOptions());
   return res.json({ user: userWithoutPassword });
 });
-router.get("/auth/users", async (_req, res) => {
+router2.post("/auth/logout", (_req, res) => {
+  res.clearCookie(SESSION_COOKIE, { path: "/" });
+  return res.json({ success: true });
+});
+router2.use(cronRouter);
+router2.use(requireSession);
+router2.use(notificationRoutes_default);
+router2.get("/auth/session", (req, res) => {
+  const user = req.user;
+  const { password: _, ...safe } = user;
+  return res.json({ user: safe });
+});
+router2.get("/auth/users", async (req, res) => {
+  if (!req.isAdmin) {
+    return res.status(403).json({ error: "Administrator privileges required to list team members" });
+  }
   const db = await getDb();
-  const sanitized = db.users.map(({ password: _, ...rest }) => rest);
+  const sanitized = db.users.map(({ password, ...rest }) => rest);
   return res.json(sanitized);
 });
-router.post("/auth/update-profile", async (req, res) => {
+router2.post("/auth/update-profile", async (req, res) => {
   const { userId, sponsorName, uplineDirector, uplineWorldTeamLeader, profileImage } = req.body;
   const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
@@ -540,7 +1716,7 @@ router.post("/auth/update-profile", async (req, res) => {
   const { password: _, ...sanitized } = user;
   return res.json({ user: sanitized });
 });
-router.post("/auth/change-password", async (req, res) => {
+router2.post("/auth/change-password", async (req, res) => {
   const { userId, currentPassword, newPassword } = req.body;
   if (!userId || !newPassword) {
     return res.status(400).json({ error: "User ID and new password are required" });
@@ -560,7 +1736,7 @@ router.post("/auth/change-password", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, message: "Password updated successfully" });
 });
-router.get("/attendance/status", async (req, res) => {
+router2.get("/attendance/status", async (req, res) => {
   const userId = req.query.userId;
   if (!userId) {
     return res.status(400).json({ error: "userId is required" });
@@ -605,7 +1781,7 @@ router.get("/attendance/status", async (req, res) => {
     gmt1
   });
 });
-router.post("/attendance/clock-in", async (req, res) => {
+router2.post("/attendance/clock-in", async (req, res) => {
   const {
     userId,
     clientLocation,
@@ -712,7 +1888,7 @@ router.post("/attendance/clock-in", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, record, timingDetail, gmt1 });
 });
-router.post("/attendance/clock-out", async (req, res) => {
+router2.post("/attendance/clock-out", async (req, res) => {
   const { userId } = req.body;
   const db = await getDb();
   const today = getTodayDateStr();
@@ -732,7 +1908,7 @@ router.post("/attendance/clock-out", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, record });
 });
-router.get("/attendance/history", async (req, res) => {
+router2.get("/attendance/history", async (req, res) => {
   const userId = req.query.userId;
   const db = await getDb();
   let list = db.attendance;
@@ -742,7 +1918,7 @@ router.get("/attendance/history", async (req, res) => {
   const sorted = [...list].sort((a, b) => b.date.localeCompare(a.date));
   return res.json(sorted);
 });
-router.get("/attendance/team", async (_req, res) => {
+router2.get("/attendance/team", async (_req, res) => {
   const db = await getDb();
   const today = getTodayDateStr();
   const members = db.users.filter((u) => u.role === "member");
@@ -804,7 +1980,7 @@ router.get("/attendance/team", async (_req, res) => {
     members: liveTeam
   });
 });
-router.get("/tasks", async (req, res) => {
+router2.get("/tasks", async (req, res) => {
   const { userId, role, status, priority, type } = req.query;
   const db = await getDb();
   let tasks = [...db.tasks];
@@ -824,7 +2000,7 @@ router.get("/tasks", async (req, res) => {
   }
   return res.json(tasks);
 });
-router.post("/tasks/toggle", async (req, res) => {
+router2.post("/tasks/toggle", async (req, res) => {
   const { taskId } = req.body;
   const db = await getDb();
   const task = db.tasks.find((t) => t.id === taskId);
@@ -836,7 +2012,7 @@ router.post("/tasks/toggle", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, task });
 });
-router.post("/tasks/create", async (req, res) => {
+router2.post("/tasks/create", async (req, res) => {
   const { title, description, assigneeId, type = "personal", priority = "medium", dueDate, dueTime } = req.body;
   if (!title || !title.trim()) {
     return res.status(400).json({ error: "Task title is required" });
@@ -862,7 +2038,7 @@ router.post("/tasks/create", async (req, res) => {
   await saveDb(db);
   return res.status(201).json({ success: true, task: newTask });
 });
-router.post("/tasks/delete", async (req, res) => {
+router2.post("/tasks/delete", async (req, res) => {
   const { taskId } = req.body;
   if (!taskId) {
     return res.status(400).json({ error: "taskId is required" });
@@ -873,14 +2049,14 @@ router.post("/tasks/delete", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, count: db.tasks.length, deleted: beforeLen !== db.tasks.length });
 });
-router.delete("/tasks/:id", async (req, res) => {
+router2.delete("/tasks/:id", async (req, res) => {
   const taskId = req.params.id;
   const db = await getDb();
   db.tasks = db.tasks.filter((t) => t.id !== taskId);
   await saveDb(db);
   return res.json({ success: true });
 });
-router.post("/tasks/update", async (req, res) => {
+router2.post("/tasks/update", async (req, res) => {
   const { taskId, status, priority, dueDate, dueTime, description, title } = req.body;
   const db = await getDb();
   const task = db.tasks.find((t) => t.id === taskId);
@@ -897,7 +2073,7 @@ router.post("/tasks/update", async (req, res) => {
   await saveDb(db);
   return res.json({ success: true, task });
 });
-router.get("/spending", async (req, res) => {
+router2.get("/spending", async (req, res) => {
   const { userId, role } = req.query;
   if (role === "admin") {
     return res.status(403).json({
@@ -922,7 +2098,7 @@ router.get("/spending", async (req, res) => {
     transactions: [...userSpend].sort((a, b) => b.date.localeCompare(a.date))
   });
 });
-router.post("/spending/add", async (req, res) => {
+router2.post("/spending/add", async (req, res) => {
   const { userId, role, merchant, amount, category, description, date, receipt } = req.body;
   if (role === "admin") {
     return res.status(403).json({
@@ -952,7 +2128,7 @@ router.post("/spending/add", async (req, res) => {
   await saveDb(db);
   return res.status(201).json({ success: true, record: newRecord });
 });
-router.get("/team", async (_req, res) => {
+router2.get("/team", async (_req, res) => {
   const db = await getDb();
   const members = db.users.map(({ password: _, ...user }) => {
     const assignedTasks = db.tasks.filter((t) => t.assigneeId === user.id);
@@ -1366,7 +2542,7 @@ function searchCuratedBooks(query, category) {
   });
   return matched.length > 0 ? matched : list;
 }
-router.get("/library/categories", async (_req, res) => {
+router2.get("/library/categories", async (_req, res) => {
   return res.json([
     "All",
     "Personal Growth",
@@ -1380,7 +2556,7 @@ router.get("/library/categories", async (_req, res) => {
     "Relationships"
   ]);
 });
-router.get("/library/books", async (req, res) => {
+router2.get("/library/books", async (req, res) => {
   const selectedCategory = req.query.category || "";
   const search = req.query.search?.trim() || "";
   const cacheKey = `${selectedCategory}_${search}`.toLowerCase();
@@ -1433,7 +2609,7 @@ router.get("/library/books", async (req, res) => {
   booksCache.set(cacheKey, { data: result, timestamp: Date.now() });
   return res.json(result);
 });
-router.get("/library/saved", async (req, res) => {
+router2.get("/library/saved", async (req, res) => {
   const userId = req.query.userId;
   if (!userId) {
     return res.status(400).json({ error: "userId is required" });
@@ -1442,7 +2618,7 @@ router.get("/library/saved", async (req, res) => {
   const saved = (db.savedBooks || []).filter((b) => b.userId === userId);
   return res.json(saved);
 });
-router.post("/library/save", async (req, res) => {
+router2.post("/library/save", async (req, res) => {
   const { userId, bookKey, title, author, coverId, coverUrl, iaId, category } = req.body;
   if (!userId || !bookKey || !title) {
     return res.status(400).json({ error: "userId, bookKey, and title are required" });
@@ -1473,7 +2649,7 @@ router.post("/library/save", async (req, res) => {
   await saveDb(db);
   return res.status(201).json({ success: true, savedBook: newSaved });
 });
-router.post("/library/progress", async (req, res) => {
+router2.post("/library/progress", async (req, res) => {
   const { id, progressPercent, status, notes } = req.body;
   const db = await getDb();
   if (!db.savedBooks) {
@@ -1672,7 +2848,7 @@ var BUILTIN_DICTIONARY = {
     }
   ]
 };
-router.get("/dictionary/:word", async (req, res) => {
+router2.get("/dictionary/:word", async (req, res) => {
   const rawWord = req.params.word?.trim().toLowerCase();
   if (!rawWord) {
     return res.status(400).json({ error: "Word parameter is required" });
@@ -1742,7 +2918,7 @@ router.get("/dictionary/:word", async (req, res) => {
   return res.json(syntheticEntry);
 });
 var googleBooksCache = /* @__PURE__ */ new Map();
-router.get("/library/google-books", async (req, res) => {
+router2.get("/library/google-books", async (req, res) => {
   const q = req.query.q?.trim() || "";
   const category = req.query.category?.trim() || "All";
   const matchingCurated = searchCuratedBooks(q || void 0, category);
@@ -1817,7 +2993,7 @@ router.get("/library/google-books", async (req, res) => {
   googleBooksCache.set(cacheKey, { data: result, timestamp: Date.now() });
   return res.json(result);
 });
-router.get("/library/google-volume/:id", async (req, res) => {
+router2.get("/library/google-volume/:id", async (req, res) => {
   const volumeId = req.params.id;
   try {
     const response = await fetch(`https://www.googleapis.com/books/v1/volumes/${encodeURIComponent(volumeId)}`);
@@ -1830,105 +3006,7 @@ router.get("/library/google-volume/:id", async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-var CURATED_MOTIVATIONAL_QUOTES = {
-  morning: [
-    {
-      quote: "Either you run the day or the day runs you. Start your morning with Income Producing Activities before anything else.",
-      author: "Jim Rohn"
-    },
-    {
-      quote: "Discipline is the bridge between your goals and your team milestones. Win the morning, win the business.",
-      author: "Jim Rohn"
-    },
-    {
-      quote: "Success in networking and freelancing is simply a few simple disciplines, practiced every single morning without fail.",
-      author: "Eric Worre"
-    },
-    {
-      quote: "Your attitude this morning sets the altitude of your entire day. Reach out to three prospective partners or clients before noon.",
-      author: "Zig Ziglar"
-    }
-  ],
-  afternoon: [
-    {
-      quote: "The fortune is in the follow-up. Keep your afternoon pipeline active and connect with every interested prospect.",
-      author: "Eric Worre"
-    },
-    {
-      quote: "Action cures fear. Inaction breeds doubt. Reach out to that prospect and deliver that client presentation now.",
-      author: "Norman Vincent Peale"
-    },
-    {
-      quote: "You don't have to be great to start, but you must start to be great. Finish today's pitches with passion.",
-      author: "Les Brown"
-    },
-    {
-      quote: "Energy flows where focus goes. Stay locked on your daily income-producing calls and project deliverables.",
-      author: "Tony Robbins"
-    }
-  ],
-  night: [
-    {
-      quote: "Review your day with honesty: Did you touch your dream today with real conversations? Consistent seeds multiply into generational legacy.",
-      author: "John C. Maxwell"
-    },
-    {
-      quote: "Preparation tonight creates victory tomorrow. Lock in your top Income Producing Activities before going to rest.",
-      author: "Brian Tracy"
-    },
-    {
-      quote: "Rest if you must, but never quit. Every follow-up and presentation you delivered today is building compounding freedom.",
-      author: "Les Brown"
-    },
-    {
-      quote: "Never go to sleep without a request to your mind for tomorrow's prospecting and leadership breakthrough.",
-      author: "Thomas Edison"
-    }
-  ],
-  "1am_midnight": [
-    {
-      quote: "While the world is sleeping, the true visionaries are building. The late night hours you invest in your mind and your vision will pay lifelong dividends.",
-      author: "Napoleon Hill"
-    },
-    {
-      quote: "1:00 AM is where champions are forged. When the average have checked out, your burning desire and relentless drive keep your dream alive.",
-      author: "Eric Thomas"
-    },
-    {
-      quote: "The midnight oil you burn today creates the freedom and financial independence that most people will only ever dream of tomorrow.",
-      author: "Jim Rohn"
-    },
-    {
-      quote: "Greatness is built in the quiet, unseen hours. Stand firm in your belief, feed your entrepreneur spirit, and know your harvest is coming.",
-      author: "Les Brown"
-    }
-  ]
-};
-function getWATPeriodDetails(hour) {
-  if (hour >= 0 && hour < 5) {
-    return {
-      period: "1am_midnight",
-      timeTitle: "1:00 AM Midnight Visionary Hustle"
-    };
-  }
-  if (hour >= 5 && hour < 12) {
-    return {
-      period: "morning",
-      timeTitle: "Morning Ignition & Prospecting Power"
-    };
-  }
-  if (hour >= 12 && hour < 18) {
-    return {
-      period: "afternoon",
-      timeTitle: "Afternoon Momentum & Presentation Drive"
-    };
-  }
-  return {
-    period: "night",
-    timeTitle: "Night Reflection & Daily Volume Review"
-  };
-}
-router.get("/ai/motivational-quote", async (req, res) => {
+router2.get("/ai/motivational-quote", async (req, res) => {
   const userId = req.query.userId;
   const db = await getDb();
   const user = db.users.find((u) => u.id === userId);
@@ -2018,7 +3096,7 @@ Respond with strict JSON adhering to this schema:
     activityHighlight: streakDays > 0 ? `${streakDays} Days Consistent` : "Growth Operator"
   });
 });
-router.post("/ai/prioritize-tasks", async (req, res) => {
+router2.post("/ai/prioritize-tasks", async (req, res) => {
   const { userId, tasks, saveToDb } = req.body;
   if (!Array.isArray(tasks) || tasks.length === 0) {
     return res.status(400).json({ error: "At least one task is required to prioritize" });
@@ -2197,7 +3275,7 @@ Provide strict JSON output adhering to this structure:
   }
   return res.json(result);
 });
-router.get("/admin/leaderboard", async (_req, res) => {
+router2.get("/admin/leaderboard", async (_req, res) => {
   const db = await getDb();
   const members = db.users.filter((u) => u.role === "member");
   const todayStr = getTodayDateStr();
@@ -2295,7 +3373,7 @@ router.get("/admin/leaderboard", async (_req, res) => {
     }
   });
 });
-router.get("/system/db-status", async (_req, res) => {
+router2.get("/system/db-status", async (_req, res) => {
   try {
     const status = await getDatabaseStatus();
     return res.json(status);
@@ -2303,7 +3381,7 @@ router.get("/system/db-status", async (_req, res) => {
     return res.status(500).json({ error: err?.message || "Failed to inspect database status" });
   }
 });
-router.get("/admin/backup", async (req, res) => {
+router2.get("/admin/backup", async (req, res) => {
   const adminId = req.query.adminId;
   const db = await getDb();
   if (adminId) {
@@ -2322,7 +3400,7 @@ router.get("/admin/backup", async (req, res) => {
     data: safeDb
   });
 });
-router.post("/admin/backup/restore", async (req, res) => {
+router2.post("/admin/backup/restore", async (req, res) => {
   const { adminId, backupData } = req.body;
   const db = await getDb();
   const requester = db.users.find((u) => u.id === adminId);
@@ -2335,7 +3413,7 @@ router.post("/admin/backup/restore", async (req, res) => {
   await saveDb(backupData);
   return res.json({ success: true, message: "Database state restored successfully" });
 });
-router.post("/admin/users/role", async (req, res) => {
+router2.post("/admin/users/role", async (req, res) => {
   const { adminId, targetUserId, newRole } = req.body;
   if (!adminId || !targetUserId || !newRole) {
     return res.status(400).json({ error: "adminId, targetUserId, and newRole are required" });
@@ -2368,7 +3446,7 @@ router.post("/admin/users/role", async (req, res) => {
     user: safeUser
   });
 });
-router.post("/admin/users/delete", async (req, res) => {
+router2.post("/admin/users/delete", async (req, res) => {
   const { adminId, targetUserId } = req.body;
   if (!adminId || !targetUserId) {
     return res.status(400).json({ error: "adminId and targetUserId are required" });
@@ -2404,7 +3482,7 @@ router.post("/admin/users/delete", async (req, res) => {
     message: `Account for ${userName} and all associated records have been permanently deleted.`
   });
 });
-router.delete("/admin/users/:userId", async (req, res) => {
+router2.delete("/admin/users/:userId", async (req, res) => {
   const targetUserId = req.params.userId;
   const adminId = req.query.adminId || req.headers["x-admin-id"];
   if (!adminId) {
@@ -2441,7 +3519,7 @@ router.delete("/admin/users/:userId", async (req, res) => {
     message: `Account for ${userName} has been permanently deleted.`
   });
 });
-router.post("/admin/purge-demo", async (req, res) => {
+router2.post("/admin/purge-demo", async (req, res) => {
   const adminId = req.body?.adminId || req.query?.adminId;
   const db = await getDb();
   if (adminId) {
@@ -2462,7 +3540,163 @@ router.post("/admin/purge-demo", async (req, res) => {
     taskCount: db.tasks.length
   });
 });
-var routes_default = router;
+var MAX_MESSAGE_LENGTH = 4e3;
+function chatUnavailable(res) {
+  return res.status(503).json({
+    error: "Chat is not configured on this deployment",
+    detail: "Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to enable messaging"
+  });
+}
+router2.post("/chat/send", async (req, res) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+  const me = req.user;
+  const { recipientId, body, id } = req.body ?? {};
+  if (typeof recipientId !== "string" || !recipientId) {
+    return res.status(400).json({ error: "recipientId is required" });
+  }
+  if (typeof body !== "string" || !body.trim()) {
+    return res.status(400).json({ error: "Message body cannot be empty" });
+  }
+  if (body.length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({ error: `Message exceeds ${MAX_MESSAGE_LENGTH} characters` });
+  }
+  if (recipientId === me.id) {
+    return res.status(400).json({ error: "You cannot message yourself" });
+  }
+  if (typeof id !== "string" || id.length < 8 || id.length > 64) {
+    return res.status(400).json({ error: "A client-generated message id is required" });
+  }
+  const db = await getDb();
+  const recipient = db.users.find((u) => u.id === recipientId);
+  if (!recipient) {
+    return res.status(404).json({ error: "Recipient not found" });
+  }
+  if (!canMessage(me, recipient)) {
+    return res.status(403).json({
+      error: recipient.role === "admin" ? "Members can only message the team lead" : "You cannot message this member"
+    });
+  }
+  try {
+    const result = await saveMessage({
+      id,
+      senderId: me.id,
+      recipientId: recipient.id,
+      body: body.trim(),
+      // The server clock is authoritative. A device with a wrong clock would
+      // otherwise write its own timestamps into the shared history, and day
+      // dividers and read receipts are derived from this column. The client
+      // keeps its own stamp for optimistic ordering before the first sync.
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    try {
+      await deliverDirectNotification({
+        userId: recipient.id,
+        type: "message",
+        title: `New message from ${me.name}`,
+        body: body.trim().length > 140 ? `${body.trim().slice(0, 137)}...` : body.trim(),
+        link: "messages",
+        createdBy: me.id,
+        createdByName: me.name,
+        meta: { threadId: threadIdFor(me.id, recipient.id), messageId: id }
+      });
+    } catch (notifyErr) {
+      console.warn("chat message notification failed:", notifyErr?.message);
+    }
+    return res.json(result);
+  } catch (err) {
+    console.error("chat/send failed:", err);
+    return res.status(503).json({ error: "Could not deliver message", detail: err?.message });
+  }
+});
+router2.get("/chat/threads", async (req, res) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+  const me = req.user;
+  const db = await getDb();
+  const isAdmin = req.isAdmin === true;
+  const counterparties = isAdmin ? db.users.filter((u) => u.id !== me.id) : db.users.filter((u) => u.role === "admin");
+  try {
+    const summaries = await listThreadSummaries(me.id);
+    const byThread = new Map(summaries.map((s) => [s.threadId, s]));
+    const threads = counterparties.map((peer) => {
+      const threadId = threadIdFor(me.id, peer.id);
+      const summary = byThread.get(threadId);
+      return {
+        threadId,
+        peer: {
+          id: peer.id,
+          name: peer.name,
+          role: peer.role,
+          profileImage: peer.profileImage
+        },
+        lastMessage: summary?.lastMessage ?? null,
+        lastMessageAt: summary?.lastMessageAt ?? null,
+        unreadCount: summary?.unreadCount ?? 0
+      };
+    });
+    threads.sort(
+      (a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? "") || a.peer.name.localeCompare(b.peer.name)
+    );
+    return res.json({ threads });
+  } catch (err) {
+    console.error("chat/threads failed:", err);
+    return res.status(503).json({ error: "Could not load conversations", detail: err?.message });
+  }
+});
+router2.get("/chat/threads/:threadId/sync", async (req, res) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+  const me = req.user;
+  const threadId = req.params.threadId;
+  const db = await getDb();
+  const peer = resolveThreadPeer(threadId, me, db.users);
+  if (!peer) {
+    return res.status(403).json({ error: "This conversation does not belong to you" });
+  }
+  const sinceSeq = Number(req.query.since_seq ?? 0) || 0;
+  const reportSeen = req.query.report_seen === "1";
+  const markAsRead = req.query.mark_read === "1";
+  try {
+    const messages = await listMessages(threadId, sinceSeq);
+    const peerState = await getReadState(threadId, peer.id);
+    const myState = await getReadState(threadId, me.id);
+    const highestSeq = messages.length > 0 ? messages[messages.length - 1].seq : myState.lastSeenSeq;
+    if (reportSeen && highestSeq > myState.lastSeenSeq) {
+      await markSeen(threadId, me.id, highestSeq);
+    }
+    if (markAsRead && highestSeq > myState.lastReadSeq) {
+      await markRead(threadId, me.id, highestSeq);
+    }
+    return res.json({
+      messages,
+      peerLastSeenSeq: peerState.lastSeenSeq,
+      peerLastReadSeq: peerState.lastReadSeq,
+      myLastReadSeq: markAsRead ? Math.max(myState.lastReadSeq, highestSeq) : myState.lastReadSeq
+    });
+  } catch (err) {
+    console.error("chat sync failed:", err);
+    return res.status(503).json({ error: "Could not sync conversation", detail: err?.message });
+  }
+});
+router2.post("/chat/threads/:threadId/read", async (req, res) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+  const me = req.user;
+  const threadId = req.params.threadId;
+  const db = await getDb();
+  if (!resolveThreadPeer(threadId, me, db.users)) {
+    return res.status(403).json({ error: "This conversation does not belong to you" });
+  }
+  const readSeq = Number(req.body?.readSeq ?? 0) || 0;
+  if (readSeq <= 0) {
+    return res.status(400).json({ error: "readSeq must be a positive sequence number" });
+  }
+  try {
+    await markRead(threadId, me.id, readSeq);
+    return res.json({ success: true, readSeq });
+  } catch (err) {
+    console.error("chat/read failed:", err);
+    return res.status(503).json({ error: "Could not update read state", detail: err?.message });
+  }
+});
+var routes_default = router2;
 
 // api-src/index.ts
 var app = express();
@@ -2471,16 +3705,11 @@ app.use((req, res, next) => {
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("X-XSS-Protection", "1; mode=block");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
   next();
 });
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
+app.use(cookieParser());
 app.get(["/", "/api", "/health", "/api/health"], (req, res) => {
   res.json({
     status: "ok",

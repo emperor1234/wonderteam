@@ -1,10 +1,66 @@
 import { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import { getDb, saveDb, hashPassword, verifyPassword, getDatabaseStatus, purgeDemoData } from './db.ts';
 import type { User, AttendanceRecord, TaskItem, SpendingRecord, DatabaseState } from './db.ts';
+import {
+  SESSION_COOKIE,
+  cookieOptions,
+  identityMismatch,
+  signSession,
+  verifySession,
+} from './session.ts';
+import {
+  canMessage,
+  chatDbEnabled,
+  getReadState,
+  listMessages,
+  listThreadSummaries,
+  markRead,
+  markSeen,
+  resolveThreadPeer,
+  saveMessage,
+  threadIdFor,
+} from './chat-db.ts';
+import { getGMT1Info, getWATPeriodDetails, CURATED_MOTIVATIONAL_QUOTES } from './wat.ts';
+import notificationRouter, { cronRouter, deliverDirectNotification } from './notificationRoutes.ts';
 
 const router = Router();
+
+/**
+ * Resolves the caller from the signed session cookie and attaches the
+ * authoritative user record to the request. Every route registered after this
+ * middleware requires a valid session; identity is never taken from the payload.
+ */
+const requireSession = async (req: Request, res: Response, next: NextFunction) => {
+  const session = verifySession(req.cookies?.[SESSION_COOKIE]);
+  if (!session) {
+    return res.status(401).json({ error: 'Sign in to continue' });
+  }
+
+  let db: DatabaseState;
+  try {
+    db = await getDb();
+  } catch (err: any) {
+    return res.status(503).json({ error: 'Account store unavailable', detail: err?.message });
+  }
+
+  const user = db.users.find((u) => u.id === session.id);
+  if (!user) {
+    // The account was deleted or purged while the cookie was still valid.
+    res.clearCookie(SESSION_COOKIE, { path: '/' });
+    return res.status(401).json({ error: 'This account is no longer active' });
+  }
+
+  const mismatch = identityMismatch(req, { id: user.id, role: user.role });
+  if (mismatch) {
+    return res.status(403).json({ error: mismatch });
+  }
+
+  (req as any).user = user;
+  (req as any).isAdmin = user.role === 'admin';
+  next();
+};
 
 // Server-side Gemini AI client initialization with required aistudio-build telemetry
 const ai = new GoogleGenAI({
@@ -26,86 +82,6 @@ function formatTime12(date: Date): string {
   const strHours = hours < 10 ? '0' + hours : '' + hours;
   const strMinutes = minutes < 10 ? '0' + minutes : '' + minutes;
   return `${strHours}:${strMinutes} ${ampm}`;
-}
-
-// Helper to calculate GMT+1 (WAT - Africa/Lagos) time details
-function getGMT1Info(d: Date = new Date(), simulatedTime?: { hour: number; minute?: number }) {
-  if (simulatedTime && typeof simulatedTime.hour === 'number') {
-    const h = simulatedTime.hour;
-    const m = simulatedTime.minute ?? 0;
-    const totalMin = h * 60 + m;
-
-    let h12 = h % 12;
-    h12 = h12 ? h12 : 12;
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    const strH = String(h12).padStart(2, '0');
-    const strM = String(m).padStart(2, '0');
-    const timeStr = `${strH}:${strM} ${ampm}`;
-
-    // On-time arrival: 9:30 AM to 10:00 AM GMT+1 (570 to 600 min)
-    const isBefore930 = totalMin < 570;
-    const isPast1000 = totalMin > 600;
-    const isBetween930and1000 = totalMin >= 570 && totalMin <= 600;
-
-    // To-do list window: 9:30 AM to 11:00 AM GMT+1 (570 to 660 min)
-    const isBeforeTodoWindow = totalMin < 570;
-    const isWithinTodoWindow = totalMin >= 570 && totalMin <= 660;
-    const isPast1100 = totalMin > 660;
-
-    return {
-      h,
-      m,
-      totalMin,
-      timeStr,
-      isBefore930,
-      isPast1000,
-      isBetween930and1000,
-      isBeforeTodoWindow,
-      isWithinTodoWindow,
-      isPast1100,
-    };
-  }
-
-  const formatter = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Africa/Lagos',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: false,
-  });
-  const parts = formatter.formatToParts(d);
-  const h = parseInt(parts.find((p) => p.type === 'hour')?.value || '0', 10);
-  const m = parseInt(parts.find((p) => p.type === 'minute')?.value || '0', 10);
-  const totalMin = h * 60 + m;
-
-  let h12 = h % 12;
-  h12 = h12 ? h12 : 12;
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const strH = String(h12).padStart(2, '0');
-  const strM = String(m).padStart(2, '0');
-  const timeStr = `${strH}:${strM} ${ampm}`;
-
-  // On-time arrival: 9:30 AM to 10:00 AM GMT+1 (570 to 600 min)
-  const isBefore930 = totalMin < 570;
-  const isPast1000 = totalMin > 600;
-  const isBetween930and1000 = totalMin >= 570 && totalMin <= 600;
-
-  // To-do list window: 9:30 AM to 11:00 AM GMT+1 (570 to 660 min)
-  const isBeforeTodoWindow = totalMin < 570;
-  const isWithinTodoWindow = totalMin >= 570 && totalMin <= 660;
-  const isPast1100 = totalMin > 660;
-
-  return {
-    h,
-    m,
-    totalMin,
-    timeStr,
-    isBefore930,
-    isPast1000,
-    isBetween930and1000,
-    isBeforeTodoWindow,
-    isWithinTodoWindow,
-    isPast1100,
-  };
 }
 
 // Haversine distance in meters
@@ -189,7 +165,6 @@ router.post('/auth/register', async (req: Request, res: Response) => {
     name,
     email,
     password,
-    role = 'member',
     sponsorName,
     uplineDirector,
     uplineWorldTeamLeader,
@@ -255,7 +230,7 @@ router.post('/auth/register', async (req: Request, res: Response) => {
 
   // Registration is strictly for members; Team Leaders are pre-configured in .env
   const newUser: User = {
-    id: `usr_${Date.now()}`,
+    id: `usr_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
     name,
     email,
     password: hashPassword(password),
@@ -286,6 +261,7 @@ router.post('/auth/register', async (req: Request, res: Response) => {
   await saveDb(db);
 
   const { password: _, ...userWithoutPassword } = newUser;
+  res.cookie(SESSION_COOKIE, signSession(newUser.id), cookieOptions());
   return res.status(201).json({ user: userWithoutPassword });
 });
 
@@ -311,12 +287,42 @@ router.post('/auth/login', async (req: Request, res: Response) => {
   }
 
   const { password: _, ...userWithoutPassword } = user;
+  res.cookie(SESSION_COOKIE, signSession(user.id), cookieOptions());
   return res.json({ user: userWithoutPassword });
 });
 
-router.get('/auth/users', async (_req: Request, res: Response) => {
+router.post('/auth/logout', (_req: Request, res: Response) => {
+  res.clearCookie(SESSION_COOKIE, { path: '/' });
+  return res.json({ success: true });
+});
+
+// -------------------------------------------------------------
+// SESSION BOUNDARY
+// Everything below requires a valid signed session cookie. Only login and
+// register are reachable without one.
+// -------------------------------------------------------------
+
+// Scheduled reminders run from Vercel Cron, which carries the CRON_SECRET
+// instead of a session cookie, so they mount ahead of the session boundary.
+router.use(cronRouter);
+
+router.use(requireSession);
+
+// Push subscriptions, the in-app inbox, per-user preferences and team messages
+router.use(notificationRouter);
+
+router.get('/auth/session', (req: Request, res: Response) => {
+  const user = (req as any).user as User;
+  const { password: _, ...safe } = user;
+  return res.json({ user: safe });
+});
+
+router.get('/auth/users', async (req: Request, res: Response) => {
+  if (!(req as any).isAdmin) {
+    return res.status(403).json({ error: 'Administrator privileges required to list team members' });
+  }
   const db = await getDb();
-  const sanitized = db.users.map(({ password: _, ...rest }) => rest);
+  const sanitized = db.users.map(({ password, ...rest }) => rest);
   return res.json(sanitized);
 });
 
@@ -1898,106 +1904,6 @@ router.get('/library/google-volume/:id', async (req: Request, res: Response) => 
 // PERSONALIZED BASED ON APP ACTIVITY
 // -------------------------------------------------------------
 
-const CURATED_MOTIVATIONAL_QUOTES: Record<'morning' | 'afternoon' | 'night' | '1am_midnight', Array<{ quote: string; author: string }>> = {
-  morning: [
-    {
-      quote: "Either you run the day or the day runs you. Start your morning with Income Producing Activities before anything else.",
-      author: "Jim Rohn",
-    },
-    {
-      quote: "Discipline is the bridge between your goals and your team milestones. Win the morning, win the business.",
-      author: "Jim Rohn",
-    },
-    {
-      quote: "Success in networking and freelancing is simply a few simple disciplines, practiced every single morning without fail.",
-      author: "Eric Worre",
-    },
-    {
-      quote: "Your attitude this morning sets the altitude of your entire day. Reach out to three prospective partners or clients before noon.",
-      author: "Zig Ziglar",
-    },
-  ],
-  afternoon: [
-    {
-      quote: "The fortune is in the follow-up. Keep your afternoon pipeline active and connect with every interested prospect.",
-      author: "Eric Worre",
-    },
-    {
-      quote: "Action cures fear. Inaction breeds doubt. Reach out to that prospect and deliver that client presentation now.",
-      author: "Norman Vincent Peale",
-    },
-    {
-      quote: "You don't have to be great to start, but you must start to be great. Finish today's pitches with passion.",
-      author: "Les Brown",
-    },
-    {
-      quote: "Energy flows where focus goes. Stay locked on your daily income-producing calls and project deliverables.",
-      author: "Tony Robbins",
-    },
-  ],
-  night: [
-    {
-      quote: "Review your day with honesty: Did you touch your dream today with real conversations? Consistent seeds multiply into generational legacy.",
-      author: "John C. Maxwell",
-    },
-    {
-      quote: "Preparation tonight creates victory tomorrow. Lock in your top Income Producing Activities before going to rest.",
-      author: "Brian Tracy",
-    },
-    {
-      quote: "Rest if you must, but never quit. Every follow-up and presentation you delivered today is building compounding freedom.",
-      author: "Les Brown",
-    },
-    {
-      quote: "Never go to sleep without a request to your mind for tomorrow's prospecting and leadership breakthrough.",
-      author: "Thomas Edison",
-    },
-  ],
-  '1am_midnight': [
-    {
-      quote: "While the world is sleeping, the true visionaries are building. The late night hours you invest in your mind and your vision will pay lifelong dividends.",
-      author: "Napoleon Hill",
-    },
-    {
-      quote: "1:00 AM is where champions are forged. When the average have checked out, your burning desire and relentless drive keep your dream alive.",
-      author: "Eric Thomas",
-    },
-    {
-      quote: "The midnight oil you burn today creates the freedom and financial independence that most people will only ever dream of tomorrow.",
-      author: "Jim Rohn",
-    },
-    {
-      quote: "Greatness is built in the quiet, unseen hours. Stand firm in your belief, feed your entrepreneur spirit, and know your harvest is coming.",
-      author: "Les Brown",
-    },
-  ],
-};
-
-function getWATPeriodDetails(hour: number) {
-  if (hour >= 0 && hour < 5) {
-    return {
-      period: '1am_midnight' as const,
-      timeTitle: '1:00 AM Midnight Visionary Hustle',
-    };
-  }
-  if (hour >= 5 && hour < 12) {
-    return {
-      period: 'morning' as const,
-      timeTitle: 'Morning Ignition & Prospecting Power',
-    };
-  }
-  if (hour >= 12 && hour < 18) {
-    return {
-      period: 'afternoon' as const,
-      timeTitle: 'Afternoon Momentum & Presentation Drive',
-    };
-  }
-  return {
-    period: 'night' as const,
-    timeTitle: 'Night Reflection & Daily Volume Review',
-  };
-}
-
 router.get('/ai/motivational-quote', async (req: Request, res: Response) => {
   const userId = req.query.userId as string;
   const db = await getDb();
@@ -2649,6 +2555,206 @@ router.post('/admin/purge-demo', async (req: Request, res: Response) => {
     attendanceCount: db.attendance.length,
     taskCount: db.tasks.length,
   });
+});
+
+// -------------------------------------------------------------
+// CHAT (1:1 threads, stored in Turso/libSQL — not in the Neon blob)
+// -------------------------------------------------------------
+
+const MAX_MESSAGE_LENGTH = 4000;
+
+function chatUnavailable(res: Response) {
+  return res.status(503).json({
+    error: 'Chat is not configured on this deployment',
+    detail: 'Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN to enable messaging',
+  });
+}
+
+router.post('/chat/send', async (req: Request, res: Response) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+
+  const me = (req as any).user as User;
+  const { recipientId, body, id } = req.body ?? {};
+
+  if (typeof recipientId !== 'string' || !recipientId) {
+    return res.status(400).json({ error: 'recipientId is required' });
+  }
+  if (typeof body !== 'string' || !body.trim()) {
+    return res.status(400).json({ error: 'Message body cannot be empty' });
+  }
+  if (body.length > MAX_MESSAGE_LENGTH) {
+    return res.status(400).json({ error: `Message exceeds ${MAX_MESSAGE_LENGTH} characters` });
+  }
+  if (recipientId === me.id) {
+    return res.status(400).json({ error: 'You cannot message yourself' });
+  }
+  if (typeof id !== 'string' || id.length < 8 || id.length > 64) {
+    return res.status(400).json({ error: 'A client-generated message id is required' });
+  }
+
+  const db = await getDb();
+  const recipient = db.users.find((u) => u.id === recipientId);
+  if (!recipient) {
+    return res.status(404).json({ error: 'Recipient not found' });
+  }
+  if (!canMessage(me, recipient)) {
+    return res.status(403).json({
+      error: recipient.role === 'admin'
+        ? 'Members can only message the team lead'
+        : 'You cannot message this member',
+    });
+  }
+
+  try {
+    const result = await saveMessage({
+      id,
+      senderId: me.id,
+      recipientId: recipient.id,
+      body: body.trim(),
+      // The server clock is authoritative. A device with a wrong clock would
+      // otherwise write its own timestamps into the shared history, and day
+      // dividers and read receipts are derived from this column. The client
+      // keeps its own stamp for optimistic ordering before the first sync.
+      createdAt: new Date().toISOString(),
+    });
+
+    // Notify the recipient out-of-band so a message still reaches a member who
+    // has the app closed. Failure here must never fail the send itself.
+    try {
+      await deliverDirectNotification({
+        userId: recipient.id,
+        type: 'message',
+        title: `New message from ${me.name}`,
+        body: body.trim().length > 140 ? `${body.trim().slice(0, 137)}...` : body.trim(),
+        link: 'messages',
+        createdBy: me.id,
+        createdByName: me.name,
+        meta: { threadId: threadIdFor(me.id, recipient.id), messageId: id },
+      });
+    } catch (notifyErr: any) {
+      console.warn('chat message notification failed:', notifyErr?.message);
+    }
+
+    return res.json(result);
+  } catch (err: any) {
+    console.error('chat/send failed:', err);
+    return res.status(503).json({ error: 'Could not deliver message', detail: err?.message });
+  }
+});
+
+router.get('/chat/threads', async (req: Request, res: Response) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+
+  const me = (req as any).user as User;
+  const db = await getDb();
+  const isAdmin = (req as any).isAdmin === true;
+
+  // An admin can open a thread with anyone; a member can only message the leader,
+  // so their thread list only ever contains the admin.
+  const counterparties = isAdmin
+    ? db.users.filter((u) => u.id !== me.id)
+    : db.users.filter((u) => u.role === 'admin');
+
+  try {
+    const summaries = await listThreadSummaries(me.id);
+    const byThread = new Map(summaries.map((s) => [s.threadId, s]));
+
+    const threads = counterparties.map((peer) => {
+      const threadId = threadIdFor(me.id, peer.id);
+      const summary = byThread.get(threadId);
+      return {
+        threadId,
+        peer: {
+          id: peer.id,
+          name: peer.name,
+          role: peer.role,
+          profileImage: peer.profileImage,
+        },
+        lastMessage: summary?.lastMessage ?? null,
+        lastMessageAt: summary?.lastMessageAt ?? null,
+        unreadCount: summary?.unreadCount ?? 0,
+      };
+    });
+
+    threads.sort((a, b) =>
+      (b.lastMessageAt ?? '').localeCompare(a.lastMessageAt ?? '') ||
+      a.peer.name.localeCompare(b.peer.name)
+    );
+
+    return res.json({ threads });
+  } catch (err: any) {
+    console.error('chat/threads failed:', err);
+    return res.status(503).json({ error: 'Could not load conversations', detail: err?.message });
+  }
+});
+
+router.get('/chat/threads/:threadId/sync', async (req: Request, res: Response) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+
+  const me = (req as any).user as User;
+  const threadId = req.params.threadId;
+  const db = await getDb();
+  const peer = resolveThreadPeer(threadId, me, db.users);
+  if (!peer) {
+    return res.status(403).json({ error: 'This conversation does not belong to you' });
+  }
+
+  const sinceSeq = Number(req.query.since_seq ?? 0) || 0;
+  const reportSeen = req.query.report_seen === '1';
+  const markAsRead = req.query.mark_read === '1';
+
+  try {
+    const messages = await listMessages(threadId, sinceSeq);
+
+    // "Delivered" means the peer's device has pulled the message; "read" is the
+    // peer's own cursor. Both are derived from watermarks, so a tick never
+    // requires writing to an individual message row.
+    const peerState = await getReadState(threadId, peer.id);
+    const myState = await getReadState(threadId, me.id);
+
+    const highestSeq = messages.length > 0 ? messages[messages.length - 1].seq : myState.lastSeenSeq;
+
+    if (reportSeen && highestSeq > myState.lastSeenSeq) {
+      await markSeen(threadId, me.id, highestSeq);
+    }
+    if (markAsRead && highestSeq > myState.lastReadSeq) {
+      await markRead(threadId, me.id, highestSeq);
+    }
+
+    return res.json({
+      messages,
+      peerLastSeenSeq: peerState.lastSeenSeq,
+      peerLastReadSeq: peerState.lastReadSeq,
+      myLastReadSeq: markAsRead ? Math.max(myState.lastReadSeq, highestSeq) : myState.lastReadSeq,
+    });
+  } catch (err: any) {
+    console.error('chat sync failed:', err);
+    return res.status(503).json({ error: 'Could not sync conversation', detail: err?.message });
+  }
+});
+
+router.post('/chat/threads/:threadId/read', async (req: Request, res: Response) => {
+  if (!chatDbEnabled()) return chatUnavailable(res);
+
+  const me = (req as any).user as User;
+  const threadId = req.params.threadId;
+  const db = await getDb();
+  if (!resolveThreadPeer(threadId, me, db.users)) {
+    return res.status(403).json({ error: 'This conversation does not belong to you' });
+  }
+
+  const readSeq = Number(req.body?.readSeq ?? 0) || 0;
+  if (readSeq <= 0) {
+    return res.status(400).json({ error: 'readSeq must be a positive sequence number' });
+  }
+
+  try {
+    await markRead(threadId, me.id, readSeq);
+    return res.json({ success: true, readSeq });
+  } catch (err: any) {
+    console.error('chat/read failed:', err);
+    return res.status(503).json({ error: 'Could not update read state', detail: err?.message });
+  }
 });
 
 export default router;

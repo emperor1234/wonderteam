@@ -22,5 +22,8 @@
   "tasks": [],
   "spending": [],
   "budgets": [],
-  "savedBooks": []
+  "savedBooks": [],
+  "pushSubscriptions": [],
+  "notifications": [],
+  "notificationPreferences": []
 }

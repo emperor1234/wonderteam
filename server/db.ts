@@ -132,6 +132,65 @@ export interface SavedBookRecord {
   lastReadDate: string;
 }
 
+export type NotificationType =
+  | 'message'
+  | 'motivation'
+  | 'todo'
+  | 'budget'
+  | 'attendance'
+  | 'reading'
+  | 'system';
+
+export interface PushSubscriptionRecord {
+  id: string;
+  userId: string;
+  endpoint: string;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  userAgent?: string;
+  createdAt: string;
+  lastUsedAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  /** 'all' targets every member of the team. */
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string;
+  link?: string;
+  icon?: string;
+  createdBy?: string;
+  createdByName?: string;
+  createdAt: string;
+  readBy: string[];
+  meta?: Record<string, any>;
+}
+
+export interface NotificationPreferences {
+  userId: string;
+  /** Master switch for push delivery. */
+  enabled: boolean;
+  messages: boolean;
+  motivation: boolean;
+  todos: boolean;
+  budget: boolean;
+  attendance: boolean;
+  reading: boolean;
+  /** Quiet hours use WAT (Africa/Lagos) hours. null disables the window. */
+  quietHoursStart: number | null;
+  quietHoursEnd: number | null;
+}
+
+export interface VapidKeyPair {
+  publicKey: string;
+  privateKey: string;
+  subject: string;
+}
+
 export interface DatabaseState {
   users: User[];
   attendance: AttendanceRecord[];
@@ -139,6 +198,10 @@ export interface DatabaseState {
   spending: SpendingRecord[];
   budgets: BudgetConfig[];
   savedBooks?: SavedBookRecord[];
+  pushSubscriptions?: PushSubscriptionRecord[];
+  notifications?: AppNotification[];
+  notificationPreferences?: NotificationPreferences[];
+  vapidKeys?: VapidKeyPair;
 }
 
 const DEFAULT_AVATAR = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><rect width="64" height="64" rx="32" fill="%23E7F4EE"/><text x="50%" y="54%" font-family="sans-serif" font-size="22" font-weight="600" fill="%230F513B" text-anchor="middle" dominant-baseline="middle">AO</text></svg>';
@@ -167,6 +230,24 @@ export function buildProductionInitialData(): DatabaseState {
     spending: [],
     budgets: [],
     savedBooks: [],
+    pushSubscriptions: [],
+    notifications: [],
+    notificationPreferences: [],
+  };
+}
+
+export function getDefaultNotificationPreferences(userId: string): NotificationPreferences {
+  return {
+    userId,
+    enabled: true,
+    messages: true,
+    motivation: true,
+    todos: true,
+    budget: true,
+    attendance: true,
+    reading: true,
+    quietHoursStart: 22,
+    quietHoursEnd: 6,
   };
 }
 
@@ -205,12 +286,24 @@ export function purgeDemoData(db: DatabaseState): boolean {
   const beforeBudgets = db.budgets.length;
   db.budgets = db.budgets.filter((b) => !demoIds.includes(b.userId));
 
+  // Push endpoints are per-device, so demo subscriptions must never receive
+  // real reminders and demo notifications must never appear in a live inbox.
+  const beforeSubs = (db.pushSubscriptions || []).length;
+  db.pushSubscriptions = (db.pushSubscriptions || []).filter((s) => !demoIds.includes(s.userId));
+
+  const beforeNotifications = (db.notifications || []).length;
+  db.notifications = (db.notifications || []).filter(
+    (n) => !demoIds.includes(n.userId) && !n.readBy?.some((r) => demoIds.includes(r))
+  );
+
   return (
     hadDemoUsers ||
     db.attendance.length !== beforeAtt ||
     db.tasks.length !== beforeTasks ||
     db.spending.length !== beforeSpend ||
-    db.budgets.length !== beforeBudgets
+    db.budgets.length !== beforeBudgets ||
+    db.pushSubscriptions.length !== beforeSubs ||
+    db.notifications.length !== beforeNotifications
   );
 }
 

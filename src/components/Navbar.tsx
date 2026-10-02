@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext.tsx';
-import { Download, WifiOff, Home, BookOpen, CheckSquare, Receipt, User as UserIcon, LogOut } from 'lucide-react';
+import { useChat } from '../context/ChatContext.tsx';
+import { NotificationBell } from './NotificationBell.tsx';
+import { Download, WifiOff, Home, BookOpen, CheckSquare, Receipt, User as UserIcon, LogOut, MessageCircle } from 'lucide-react';
 
 interface NavbarProps {
   onOpenAuth: () => void;
@@ -11,6 +13,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelectTab, isAdmin }) => {
   const { user, isOffline, logout } = useAuth();
+  const { enabled, totalUnread } = useChat();
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
 
@@ -38,6 +41,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelect
     { id: 'tasks', label: 'Tasks', icon: CheckSquare },
     { id: 'spending', label: 'Spending', icon: Receipt },
     { id: 'profile', label: 'Profile', icon: UserIcon },
+    ...(enabled
+      ? [{ id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread }]
+      : []),
   ];
 
   return (
@@ -85,6 +91,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelect
                 >
                   <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-[#146C4E]' : 'text-[#89928E]'}`} />
                   <span>{item.label}</span>
+                  {'badge' in item && (item.badge ?? 0) > 0 && (
+                    <span className="min-w-[16px] h-4 px-1 rounded-full bg-[#C84C4C] text-white text-[9px] font-bold flex items-center justify-center">
+                      {item.badge! > 9 ? '9+' : item.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -93,6 +104,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelect
 
         {/* Right Actions */}
         <div className="flex items-center gap-2">
+          {user && <NotificationBell />}
+
           {deferredPrompt && (
             <button
               onClick={handleInstallClick}
