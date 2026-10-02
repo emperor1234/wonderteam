@@ -65,7 +65,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
   const [lastLink, setLastLink] = useState<string | null>(null);
   const shownIdsRef = useRef<Set<string>>(new Set());
 
-  const isSupported = typeof window !== 'undefined' && 'Notification' in window;
+  // Chrome exposes `window.Notification` on insecure origins but refuses to grant
+  // permission there, so isSecureContext is the signal that actually matters.
+  // On http://<LAN-IP> the inbox still works; only OS-level push is unavailable.
+  const isSupported =
+    typeof window !== 'undefined' && 'Notification' in window && window.isSecureContext;
 
   useEffect(() => {
     if (!isSupported) {
@@ -210,6 +214,11 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
     setError(null);
 
     try {
+      if (!window.isSecureContext) {
+        setError('Notifications need HTTPS. Open WonderTeam over HTTPS or install it to your home screen.');
+        return false;
+      }
+
       const result = await Notification.requestPermission();
       setPermission(result);
       if (result !== 'granted') {

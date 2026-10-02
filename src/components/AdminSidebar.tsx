@@ -10,7 +10,7 @@ interface AdminSidebarProps {
 
 export const AdminSidebar: React.FC<AdminSidebarProps> = ({ currentTab, onSelectTab }) => {
   const { user } = useAuth();
-  const { enabled, totalUnread } = useChat();
+  const { totalUnread } = useChat();
 
   const navItems = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard, badge: 0 },
@@ -19,9 +19,7 @@ export const AdminSidebar: React.FC<AdminSidebarProps> = ({ currentTab, onSelect
     { id: 'library', label: 'Growth Library', icon: BookOpen, badge: 0 },
     { id: 'tasks', label: 'Operations & Tasks', icon: CheckSquare, badge: 0 },
     { id: 'team', label: 'Team Directory', icon: Users, badge: 0 },
-    ...(enabled
-      ? [{ id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread }]
-      : []),
+    { id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread },
   ];
 
   return (

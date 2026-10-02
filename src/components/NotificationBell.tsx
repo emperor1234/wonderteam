@@ -120,9 +120,9 @@ export const NotificationBell: React.FC = () => {
     };
   }, [isOpen]);
 
-  if (!user || !isSupported) return null;
+  if (!user) return null;
 
-  const needsPermission = permission !== 'granted' || !isSubscribed;
+  const needsPermission = isSupported && (permission !== 'granted' || !isSubscribed);
   const isAdmin = user.role === 'admin';
 
   const handleSend = async () => {
@@ -199,6 +199,20 @@ export const NotificationBell: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {!isSupported && (
+            // The Notification API only exists in a secure context, so this is
+            // the state on http://<LAN-IP> and inside some in-app browsers. The
+            // inbox still works; only OS-level push is unavailable.
+            <div className="px-3.5 py-3 bg-[#F7F9F8] border-b border-[#E2E8E5] flex items-start gap-2">
+              <Smartphone className="w-4 h-4 text-[#5E6964] mt-0.5 shrink-0" />
+              <div className="text-[11px] text-[#5E6964] leading-relaxed">
+                <span className="font-bold text-[#17211D]">Push alerts are unavailable here.</span>{' '}
+                Open WonderTeam over HTTPS, or install it to your home screen, to get alerts when the
+                app is closed. Messages and reminders still appear in this list.
+              </div>
+            </div>
+          )}
 
           {needsPermission && (
             <div className="px-3.5 py-3 bg-[#F7F9F8] border-b border-[#E2E8E5] space-y-2">

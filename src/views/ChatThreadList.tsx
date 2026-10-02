@@ -29,13 +29,34 @@ export const ChatThreadList: React.FC<ChatThreadListProps> = ({ onOpenThread }) 
   if (!enabled) {
     return (
       <div className="max-w-2xl mx-auto">
-        <h2 className="text-sm font-bold text-[#17211D] mb-3 px-1">Messages</h2>
-        <div className="flex items-start gap-2 px-3 py-3 bg-[#F7F9F8] border border-[#E2E8E5] rounded-[12px]">
-          <AlertTriangle className="w-4 h-4 text-[#5E6964] shrink-0 mt-0.5" />
-          <p className="text-[11px] text-[#5E6964] leading-relaxed">
-            Messaging is not configured on this deployment. Everything else keeps working
-            normally.
-          </p>
+        <h2 className="text-sm font-bold text-[#17211D] mb-1 px-1">Messages</h2>
+        <p className="text-[11px] text-[#89928E] mb-3 px-1">Direct messages between members</p>
+
+        <div className="px-4 py-4 bg-white border border-[#E2E8E5] rounded-[14px]">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-[#B7791F] shrink-0 mt-0.5" />
+            <div className="text-[12px] text-[#5E6964] leading-relaxed">
+              <p className="font-bold text-[#17211D] mb-1">Messaging is not switched on yet</p>
+              <p>
+                This deployment has no chat database connected, so conversations cannot be
+                created. Everything else in WonderTeam keeps working normally.
+              </p>
+              <p className="mt-2 text-[11px] text-[#89928E]">
+                To turn it on, add the two chat variables to the deployment and redeploy:
+              </p>
+              <ul className="mt-1 space-y-0.5 text-[11px] font-medium text-[#17211D]">
+                <li>
+                  <code className="text-[#146C4E]">TURSO_DATABASE_URL</code>
+                </li>
+                <li>
+                  <code className="text-[#146C4E]">TURSO_AUTH_TOKEN</code>
+                </li>
+              </ul>
+              <p className="mt-2 text-[11px] text-[#89928E]">
+                Create a free database at turso.tech. No code change is needed.
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     );

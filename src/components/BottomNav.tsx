@@ -17,10 +17,17 @@ interface NavItem {
 
 export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab }) => {
   const { user } = useAuth();
-  const { enabled, totalUnread } = useChat();
+  const { totalUnread } = useChat();
   const isAdmin = user?.role === 'admin';
 
   // Member navigation: Home, Library (Reading & Dictionary), Tasks, Spending, Profile
+  const messageItem: NavItem = {
+    id: 'messages',
+    label: 'Messages',
+    icon: MessageCircle,
+    badge: totalUnread,
+  };
+
   const memberItems: NavItem[] = [
     { id: 'home', label: 'Home', icon: Home },
     { id: 'library', label: 'Library', icon: BookOpen },
@@ -38,10 +45,9 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
     { id: 'team', label: 'Team', icon: Users },
   ];
 
-  const items = [...(isAdmin ? adminItems : memberItems)];
-  if (enabled) {
-    items.push({ id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread });
-  }
+  // The Messages entry stays visible even when chat is unconfigured, so the
+  // screen can explain what is missing instead of the feature silently vanishing.
+  const items = [...(isAdmin ? adminItems : memberItems), messageItem];
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-[#E2E8E5] pb-[env(safe-area-inset-bottom,0px)]">

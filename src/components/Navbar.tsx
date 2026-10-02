@@ -13,7 +13,7 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelectTab, isAdmin }) => {
   const { user, isOffline, logout } = useAuth();
-  const { enabled, totalUnread } = useChat();
+  const { totalUnread } = useChat();
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [showSwitchMenu, setShowSwitchMenu] = useState(false);
 
@@ -41,9 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenAuth, currentTab, onSelect
     { id: 'tasks', label: 'Tasks', icon: CheckSquare },
     { id: 'spending', label: 'Spending', icon: Receipt },
     { id: 'profile', label: 'Profile', icon: UserIcon },
-    ...(enabled
-      ? [{ id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread }]
-      : []),
+    { id: 'messages', label: 'Messages', icon: MessageCircle, badge: totalUnread },
   ];
 
   return (
