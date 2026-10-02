@@ -261,13 +261,21 @@ export function purgeDemoData(db: DatabaseState): boolean {
     'tobi@wonderteam.com',
   ];
 
+  // The configured team leader is a real account even when it sits on the demo
+  // domain, and this function runs on every read, so it must never be swept up.
+  const configuredLeader = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase();
+
+  // Only the explicitly seeded demo accounts are removable. A blanket rule such
+  // as "any address at this domain" silently deleted real members: the signup
+  // form suggests member@wonderteam.com, so anyone who followed it registered
+  // successfully and then had their account erased on the very next read, which
+  // is also why they could never sign in or message anyone.
   const beforeLen = db.users.length;
-  db.users = db.users.filter(
-    (u) =>
-      !demoIds.includes(u.id) &&
-      !demoEmails.includes(u.email.toLowerCase()) &&
-      !u.email.toLowerCase().endsWith('@wonderteam.com')
-  );
+  db.users = db.users.filter((u) => {
+    const email = u.email.toLowerCase();
+    if (configuredLeader && email === configuredLeader) return true;
+    return !demoIds.includes(u.id) && !demoEmails.includes(email);
+  });
 
   const hadDemoUsers = db.users.length !== beforeLen;
   // Only purge records that belong to seeded DEMO users. Filtering by the

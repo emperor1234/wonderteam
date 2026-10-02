@@ -75,10 +75,13 @@ function purgeDemoData(db) {
     "mariam@wonderteam.com",
     "tobi@wonderteam.com"
   ];
+  const configuredLeader = process.env.TEAM_LEADER_EMAIL?.trim().toLowerCase();
   const beforeLen = db.users.length;
-  db.users = db.users.filter(
-    (u) => !demoIds.includes(u.id) && !demoEmails.includes(u.email.toLowerCase()) && !u.email.toLowerCase().endsWith("@wonderteam.com")
-  );
+  db.users = db.users.filter((u) => {
+    const email = u.email.toLowerCase();
+    if (configuredLeader && email === configuredLeader) return true;
+    return !demoIds.includes(u.id) && !demoEmails.includes(email);
+  });
   const hadDemoUsers = db.users.length !== beforeLen;
   const beforeAtt = db.attendance.length;
   db.attendance = db.attendance.filter((a) => !demoIds.includes(a.userId));
